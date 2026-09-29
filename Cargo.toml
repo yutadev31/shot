@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
-image = "0.25.10"
+image = { version = "0.25.10", default-features = false, features = ["png"] }
 memmap2 = "0.9.11"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
