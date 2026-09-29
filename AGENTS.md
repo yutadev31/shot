@@ -75,3 +75,4 @@ cargo run -- --monitor 0
 - Before submitting changes, run the formatting and compile checks above, and
   perform a live capture when the change affects a display backend, clipboard,
   or PNG output.
+- After completing work, output a commit message in English that follows the Conventional Commits specification.

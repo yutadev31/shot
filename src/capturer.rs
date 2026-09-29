@@ -37,8 +37,34 @@ impl Capturer {
         Ok(Self { backend })
     }
 
+    pub fn new_for_all_monitors() -> crate::Result<Self> {
+        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
+            Box::new(WaylandBackend::initialize_all()?)
+        } else if env::var_os("DISPLAY").is_some() {
+            Box::new(X11Backend::initialize_all()?)
+        } else {
+            return Err(crate::Error::X11(
+                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
+            ));
+        };
+
+        Ok(Self { backend })
+    }
+
     pub fn capture_output(&mut self) -> crate::Result<()> {
         let frame = self.backend.capture_output()?;
+        let png = encode_png(&frame)?;
+
+        let path = save_to_file(&png)?;
+        copy_to_clipboard(&png)?;
+        println!("Saved screenshot to {}", path.display());
+        println!("Copied screenshot to clipboard");
+
+        Ok(())
+    }
+
+    pub fn capture_all_outputs(&mut self) -> crate::Result<()> {
+        let frame = self.backend.capture_all_outputs()?;
         let png = encode_png(&frame)?;
 
         let path = save_to_file(&png)?;

@@ -2,6 +2,7 @@
 
 Wayland または X11 の指定したモニターをキャプチャし、クリップボードと
 `~/Pictures/Screenshots` の両方に PNG として保存します。
+`--all` を指定すると、接続されている全モニターを横方向に連結した1枚の画像を保存します。
 
 クリップボードへの保存には `arboard` を使用します。Wayland で動かす場合は
 `wayland-data-control` 対応のコンポジターが必要です。X11 では `DISPLAY` を使い、
@@ -15,6 +16,9 @@ shot
 
 # 2 台目（モニター番号は 0 始まり）
 shot --monitor 1
+
+# 接続中の全モニター
+shot --all
 ```
 
 使えるオプションは `shot --help` で確認できます。

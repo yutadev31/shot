@@ -7,5 +7,9 @@ pub trait Backend {
     fn initialize(monitor_index: usize) -> crate::Result<Self>
     where
         Self: Sized;
+    fn initialize_all() -> crate::Result<Self>
+    where
+        Self: Sized;
     fn capture_output(&mut self) -> crate::Result<Frame>;
+    fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
 }

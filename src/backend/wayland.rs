@@ -16,16 +16,38 @@ use crate::{
 
 pub struct WaylandBackend {
     state: State,
-    connection: Connection,
     event_queue: EventQueue<State>,
 
     shm: wl_shm::WlShm,
-    output: wl_output::WlOutput,
+    outputs: Vec<wl_output::WlOutput>,
     manager: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 }
 
 impl Backend for WaylandBackend {
     fn initialize(monitor_index: usize) -> crate::Result<Self> {
+        Self::initialize_with_outputs(Some(monitor_index))
+    }
+
+    fn initialize_all() -> crate::Result<Self> {
+        Self::initialize_with_outputs(None)
+    }
+
+    fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
+        let mut frames = Vec::with_capacity(self.outputs.len());
+        for output in self.outputs.clone() {
+            frames.push(self.capture_one(&output)?);
+        }
+        crate::frame::stitch_horizontally(&frames)
+    }
+
+    fn capture_output(&mut self) -> crate::Result<Frame> {
+        let output = self.outputs[0].clone();
+        self.capture_one(&output)
+    }
+}
+
+impl WaylandBackend {
+    fn initialize_with_outputs(monitor_index: Option<usize>) -> crate::Result<Self> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
 
@@ -41,17 +63,23 @@ impl Backend for WaylandBackend {
                 .collect::<Vec<_>>()
         });
         let output_count = output_globals.len();
-        let (output_name, output_version) =
-            output_globals
-                .get(monitor_index)
-                .copied()
-                .ok_or(crate::Error::MonitorOutOfRange {
-                    index: monitor_index,
-                    count: output_count,
-                })?;
-        let output = globals
-            .registry()
-            .bind(output_name, output_version.min(4), &qh, ());
+        let selected_globals = match monitor_index {
+            Some(index) => {
+                vec![
+                    *output_globals
+                        .get(index)
+                        .ok_or(crate::Error::MonitorOutOfRange {
+                            index,
+                            count: output_count,
+                        })?,
+                ]
+            }
+            None => output_globals,
+        };
+        let outputs = selected_globals
+            .into_iter()
+            .map(|(name, version)| globals.registry().bind(name, version.min(4), &qh, ()))
+            .collect();
 
         let manager = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
             &qh,
@@ -65,20 +93,19 @@ impl Backend for WaylandBackend {
 
         Ok(Self {
             state,
-            connection,
             event_queue,
             shm,
-            output,
+            outputs,
             manager,
         })
     }
 
-    fn capture_output(&mut self) -> crate::Result<Frame> {
+    fn capture_one(&mut self, output: &wl_output::WlOutput) -> crate::Result<Frame> {
         let qh = self.event_queue.handle();
 
         self.state.reset();
 
-        let frame = self.manager.capture_output(0, &self.output, &qh, ());
+        let frame = self.manager.capture_output(0, output, &qh, ());
 
         while self.state.buffer_info.is_none() && !self.state.failed {
             self.event_queue.blocking_dispatch(&mut self.state)?;
@@ -264,7 +291,8 @@ fn convert_to_rgba(
             .get(start..end)
             .ok_or(crate::Error::InvalidImageBuffer)?;
 
-        for pixel in row.chunks_exact(4) {
+        let (pixels, _) = row.as_chunks::<4>();
+        for pixel in pixels {
             let b = pixel[0];
             let g = pixel[1];
             let r = pixel[2];

@@ -16,7 +16,7 @@ use crate::{
 pub struct X11Backend {
     connection: RustConnection,
     root: u32,
-    monitor: Monitor,
+    monitors: Vec<Monitor>,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -32,6 +32,29 @@ struct Monitor {
 
 impl Backend for X11Backend {
     fn initialize(monitor_index: usize) -> crate::Result<Self> {
+        Self::initialize_with_monitors(Some(monitor_index))
+    }
+
+    fn initialize_all() -> crate::Result<Self> {
+        Self::initialize_with_monitors(None)
+    }
+
+    fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
+        let monitors = self.monitors.clone();
+        let mut frames = Vec::with_capacity(monitors.len());
+        for monitor in monitors {
+            frames.push(self.capture_monitor(monitor)?);
+        }
+        crate::frame::stitch_horizontally(&frames)
+    }
+
+    fn capture_output(&mut self) -> crate::Result<Frame> {
+        self.capture_monitor(self.monitors[0])
+    }
+}
+
+impl X11Backend {
+    fn initialize_with_monitors(monitor_index: Option<usize>) -> crate::Result<Self> {
         let (connection, screen_num) =
             x11rb::connect(None).map_err(|error| crate::Error::X11(error.to_string()))?;
         let setup = connection.setup();
@@ -70,14 +93,13 @@ impl Backend for X11Backend {
                     height: screen.height_in_pixels,
                 }]
             });
-        let monitor =
-            monitors
-                .get(monitor_index)
-                .copied()
-                .ok_or(crate::Error::MonitorOutOfRange {
-                    index: monitor_index,
-                    count: monitors.len(),
-                })?;
+        let monitors = match monitor_index {
+            Some(index) => vec![*monitors.get(index).ok_or(crate::Error::MonitorOutOfRange {
+                index,
+                count: monitors.len(),
+            })?],
+            None => monitors,
+        };
         let root = screen.root;
         let red_mask = visual.red_mask;
         let green_mask = visual.green_mask;
@@ -86,23 +108,23 @@ impl Backend for X11Backend {
         Ok(Self {
             connection,
             root,
-            monitor,
+            monitors,
             red_mask,
             green_mask,
             blue_mask,
         })
     }
 
-    fn capture_output(&mut self) -> crate::Result<Frame> {
+    fn capture_monitor(&mut self, monitor: Monitor) -> crate::Result<Frame> {
         let reply = self
             .connection
             .get_image(
                 ImageFormat::Z_PIXMAP,
                 self.root,
-                self.monitor.x,
-                self.monitor.y,
-                self.monitor.width,
-                self.monitor.height,
+                monitor.x,
+                monitor.y,
+                monitor.width,
+                monitor.height,
                 u32::MAX,
             )
             .map_err(|error| crate::Error::X11(error.to_string()))?
@@ -110,15 +132,15 @@ impl Backend for X11Backend {
             .map_err(|error| crate::Error::X11(error.to_string()))?;
         let image = Image::get_from_reply(
             self.connection.setup(),
-            self.monitor.width,
-            self.monitor.height,
+            monitor.width,
+            monitor.height,
             reply,
         )
         .map_err(|error| crate::Error::X11(error.to_string()))?;
-        let capacity = self.monitor.width as usize * self.monitor.height as usize * 4;
+        let capacity = monitor.width as usize * monitor.height as usize * 4;
         let mut data = Vec::with_capacity(capacity);
-        for y in 0..self.monitor.height {
-            for x in 0..self.monitor.width {
+        for y in 0..monitor.height {
+            for x in 0..monitor.width {
                 let pixel = image.get_pixel(x, y);
                 data.extend_from_slice(&[
                     channel(pixel, self.red_mask),
@@ -130,8 +152,8 @@ impl Backend for X11Backend {
         }
         Ok(Frame {
             data,
-            width: self.monitor.width as u32,
-            height: self.monitor.height as u32,
+            width: monitor.width as u32,
+            height: monitor.height as u32,
             format: PixelFormat::Rgba8,
         })
     }
