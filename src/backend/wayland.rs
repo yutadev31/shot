@@ -14,7 +14,7 @@ use crate::{
     frame::{Frame, PixelFormat},
 };
 
-pub struct WlrScreencopyBackend {
+pub struct WaylandBackend {
     state: State,
     connection: Connection,
     event_queue: EventQueue<State>,
@@ -24,7 +24,7 @@ pub struct WlrScreencopyBackend {
     manager: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 }
 
-impl Backend for WlrScreencopyBackend {
+impl Backend for WaylandBackend {
     fn initialize(monitor_index: usize) -> crate::Result<Self> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
@@ -218,7 +218,6 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for State {
     }
 }
 
-wayland_client::delegate_noop!(State: ignore wl_registry::WlRegistry);
 wayland_client::delegate_noop!(State: ignore wl_output::WlOutput);
 wayland_client::delegate_noop!(State: ignore wl_shm::WlShm);
 wayland_client::delegate_noop!(State: ignore wl_shm_pool::WlShmPool);

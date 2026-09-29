@@ -1,6 +1,6 @@
 use crate::frame::Frame;
 
-pub mod wlr_screencopy;
+pub mod wayland;
 pub mod x11;
 
 pub trait Backend {
