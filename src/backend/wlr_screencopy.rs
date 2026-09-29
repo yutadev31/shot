@@ -58,9 +58,7 @@ impl Backend for WlrScreencopyBackend {
     fn capture_output(&mut self) -> crate::Result<Frame> {
         let qh = self.event_queue.handle();
 
-        self.state.buffer_info = None;
-        self.state.ready = false;
-        self.state.failed = false;
+        self.state.reset();
 
         let frame = self.manager.capture_output(0, &self.output, &qh, ());
 
@@ -68,20 +66,31 @@ impl Backend for WlrScreencopyBackend {
             self.event_queue.blocking_dispatch(&mut self.state)?;
         }
 
+        if let Some(format) = self.state.unsupported_format {
+            return Err(crate::Error::UnsupportedWaylandPixelFormat(format));
+        }
         if self.state.failed {
             return Err(crate::Error::WaylandScreencopyFailed);
         }
 
         let info = self.state.buffer_info.take().unwrap();
 
-        let size = info.stride as usize * info.height as usize;
+        let row_size = info.width as usize * 4;
+        let stride = info.stride as usize;
+        if stride < row_size {
+            return Err(crate::Error::InvalidImageBuffer);
+        }
+        let size = stride
+            .checked_mul(info.height as usize)
+            .ok_or(crate::Error::InvalidImageBuffer)?;
+        let size_i32 = i32::try_from(size).map_err(|_| crate::Error::InvalidImageBuffer)?;
 
         let file = tempfile::tempfile()?;
         file.set_len(size as u64)?;
 
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
 
-        let pool = self.shm.create_pool(file.as_fd(), size as i32, &qh, ());
+        let pool = self.shm.create_pool(file.as_fd(), size_i32, &qh, ());
 
         let buffer = pool.create_buffer(
             0,
@@ -103,9 +112,7 @@ impl Backend for WlrScreencopyBackend {
             return Err(crate::Error::WaylandScreencopyFailed);
         }
 
-        let data = mmap.to_vec();
-        let data = convert_to_rgba(&data, info.width, info.height, info.stride, info.format)?;
-        let data = remove_stride(&data, info.width, info.height, info.stride);
+        let data = convert_to_rgba(&mmap, info.width, info.height, info.stride, info.format)?;
 
         Ok(Frame {
             data,
@@ -121,6 +128,16 @@ struct State {
     buffer_info: Option<BufferInfo>,
     ready: bool,
     failed: bool,
+    unsupported_format: Option<wl_shm::Format>,
+}
+
+impl State {
+    fn reset(&mut self) {
+        self.buffer_info = None;
+        self.ready = false;
+        self.failed = false;
+        self.unsupported_format = None;
+    }
 }
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
@@ -151,12 +168,23 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for State {
                 height,
                 stride,
             } => {
-                state.buffer_info = Some(BufferInfo {
-                    format,
-                    width,
-                    height,
-                    stride,
-                });
+                if matches!(format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888) {
+                    state.buffer_info = Some(BufferInfo {
+                        format,
+                        width,
+                        height,
+                        stride,
+                    });
+                } else {
+                    state.unsupported_format = Some(format);
+                    state.failed = true;
+                }
+            }
+
+            zwlr_screencopy_frame_v1::Event::Buffer { .. } => {
+                // Do not keep dispatching forever when the compositor advertises
+                // an enum value this client does not know.
+                state.failed = true;
             }
 
             zwlr_screencopy_frame_v1::Event::Ready { .. } => {
@@ -186,22 +214,6 @@ struct BufferInfo {
     stride: u32,
 }
 
-fn remove_stride(data: &[u8], width: u32, height: u32, stride: u32) -> Vec<u8> {
-    let row_size = width as usize * 4;
-    let stride = stride as usize;
-
-    let mut output = Vec::with_capacity(row_size * height as usize);
-
-    for y in 0..height as usize {
-        let start = y * stride;
-        let end = start + row_size;
-
-        output.extend_from_slice(&data[start..end]);
-    }
-
-    output
-}
-
 fn convert_to_rgba(
     data: &[u8],
     width: u32,
@@ -213,10 +225,21 @@ fn convert_to_rgba(
     let height = height as usize;
     let stride = stride as usize;
 
-    let mut output = Vec::with_capacity(width * height * 4);
+    let mut output = Vec::with_capacity(
+        width
+            .checked_mul(height)
+            .and_then(|size| size.checked_mul(4))
+            .ok_or(crate::Error::InvalidImageBuffer)?,
+    );
 
     for y in 0..height {
-        let row = &data[y * stride..y * stride + width * 4];
+        let start = y
+            .checked_mul(stride)
+            .ok_or(crate::Error::InvalidImageBuffer)?;
+        let end = start
+            .checked_add(width.checked_mul(4).ok_or(crate::Error::InvalidImageBuffer)?)
+            .ok_or(crate::Error::InvalidImageBuffer)?;
+        let row = data.get(start..end).ok_or(crate::Error::InvalidImageBuffer)?;
 
         for pixel in row.chunks_exact(4) {
             let b = pixel[0];
