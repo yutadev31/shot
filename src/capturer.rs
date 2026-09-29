@@ -1,0 +1,33 @@
+use std::io;
+
+use image::{ExtendedColorType, ImageEncoder, codecs::png::PngEncoder};
+
+use crate::backend::{Backend, wlr_screencopy::WlrScreencopyBackend};
+
+pub struct Capturer {
+    backend: Box<dyn Backend>,
+}
+
+impl Capturer {
+    pub fn new() -> crate::Result<Self> {
+        let backend = Box::new(WlrScreencopyBackend::initialize()?);
+
+        Ok(Self { backend })
+    }
+
+    pub fn capture_output(&mut self) -> crate::Result<()> {
+        let frame = self.backend.capture_output()?;
+
+        let stdout = io::stdout();
+        let writer = io::BufWriter::new(stdout.lock());
+
+        PngEncoder::new(writer).write_image(
+            &frame.data,
+            frame.width,
+            frame.height,
+            ExtendedColorType::Rgba8,
+        )?;
+
+        Ok(())
+    }
+}
