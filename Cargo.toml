@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 clap = { version = "4.5.48", features = ["derive"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 memmap2 = "0.9.11"
