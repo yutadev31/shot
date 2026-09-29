@@ -21,6 +21,9 @@ pub enum Error {
     #[error("failed to bind Wayland global: {0}")]
     WaylandBind(#[from] wayland_client::globals::BindError),
 
+    #[error("monitor index {index} is out of range (found {count} monitor(s))")]
+    MonitorOutOfRange { index: usize, count: usize },
+
     #[error("invalid image buffer")]
     InvalidImageBuffer,
 

@@ -25,7 +25,7 @@ pub struct WlrScreencopyBackend {
 }
 
 impl Backend for WlrScreencopyBackend {
-    fn initialize() -> crate::Result<Self> {
+    fn initialize(monitor_index: usize) -> crate::Result<Self> {
         let connection = Connection::connect_to_env()?;
         let (globals, mut event_queue) = registry_queue_init::<State>(&connection)?;
 
@@ -33,7 +33,25 @@ impl Backend for WlrScreencopyBackend {
 
         let shm = globals.bind::<wl_shm::WlShm, _, _>(&qh, 1..=1, ())?;
 
-        let output = globals.bind::<wl_output::WlOutput, _, _>(&qh, 1..=4, ())?;
+        let output_globals = globals.contents().with_list(|globals| {
+            globals
+                .iter()
+                .filter(|global| global.interface == "wl_output")
+                .map(|global| (global.name, global.version))
+                .collect::<Vec<_>>()
+        });
+        let output_count = output_globals.len();
+        let (output_name, output_version) =
+            output_globals
+                .get(monitor_index)
+                .copied()
+                .ok_or(crate::Error::MonitorOutOfRange {
+                    index: monitor_index,
+                    count: output_count,
+                })?;
+        let output = globals
+            .registry()
+            .bind(output_name, output_version.min(4), &qh, ());
 
         let manager = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
             &qh,
@@ -237,9 +255,15 @@ fn convert_to_rgba(
             .checked_mul(stride)
             .ok_or(crate::Error::InvalidImageBuffer)?;
         let end = start
-            .checked_add(width.checked_mul(4).ok_or(crate::Error::InvalidImageBuffer)?)
+            .checked_add(
+                width
+                    .checked_mul(4)
+                    .ok_or(crate::Error::InvalidImageBuffer)?,
+            )
             .ok_or(crate::Error::InvalidImageBuffer)?;
-        let row = data.get(start..end).ok_or(crate::Error::InvalidImageBuffer)?;
+        let row = data
+            .get(start..end)
+            .ok_or(crate::Error::InvalidImageBuffer)?;
 
         for pixel in row.chunks_exact(4) {
             let b = pixel[0];

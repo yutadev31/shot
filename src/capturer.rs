@@ -13,7 +13,11 @@ pub struct Capturer {
 
 impl Capturer {
     pub fn new() -> crate::Result<Self> {
-        let backend = Box::new(WlrScreencopyBackend::initialize()?);
+        Self::new_for_monitor(0)
+    }
+
+    pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
+        let backend = Box::new(WlrScreencopyBackend::initialize(monitor_index)?);
 
         Ok(Self { backend })
     }
