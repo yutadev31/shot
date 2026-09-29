@@ -12,7 +12,7 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
-use crate::backend::{Backend, wlr_screencopy::WlrScreencopyBackend};
+use crate::backend::{Backend, wlr_screencopy::WlrScreencopyBackend, x11::X11Backend};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
@@ -24,7 +24,15 @@ impl Capturer {
     }
 
     pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
-        let backend = Box::new(WlrScreencopyBackend::initialize(monitor_index)?);
+        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
+            Box::new(WlrScreencopyBackend::initialize(monitor_index)?)
+        } else if env::var_os("DISPLAY").is_some() {
+            Box::new(X11Backend::initialize(monitor_index)?)
+        } else {
+            return Err(crate::Error::X11(
+                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
+            ));
+        };
 
         Ok(Self { backend })
     }

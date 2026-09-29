@@ -695,6 +695,7 @@ dependencies = [
  "thiserror",
  "wayland-client",
  "wayland-protocols-wlr",
+ "x11rb",
 ]
 
 [[package]]

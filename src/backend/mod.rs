@@ -1,6 +1,7 @@
 use crate::frame::Frame;
 
 pub mod wlr_screencopy;
+pub mod x11;
 
 pub trait Backend {
     fn initialize(monitor_index: usize) -> crate::Result<Self>

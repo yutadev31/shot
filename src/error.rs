@@ -32,6 +32,9 @@ pub enum Error {
 
     #[error("failed to access clipboard")]
     ClipboardFailed,
+
+    #[error("X11 operation failed: {0}")]
+    X11(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
