@@ -55,7 +55,8 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
             }
         }
     })();
-    let cleanup = terminal::disable_raw_mode().and(execute!(stdout, cursor::Show));
+    let cleanup =
+        terminal::disable_raw_mode().and(execute!(stdout, cursor::Show, cursor::MoveToColumn(0)));
     match cleanup {
         Ok(()) => result,
         Err(error) => Err(error),
