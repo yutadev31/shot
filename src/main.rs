@@ -1,5 +1,6 @@
 use std::{
     io::{self, Write},
+    path::PathBuf,
     process::{Command, Stdio},
 };
 
@@ -10,7 +11,7 @@ use crossterm::{
     execute,
     terminal::{self, ClearType},
 };
-use shot::Capturer;
+use shot::{Capturer, serve_clipboard};
 
 #[derive(Debug, Parser)]
 #[command(name = "shot", about = "Capture a screenshot from a monitor")]
@@ -26,10 +27,18 @@ struct Cli {
     /// Select a monitor using rofi
     #[arg(short = 'r', long, conflicts_with_all = ["monitor", "all"])]
     rofi: bool,
+
+    #[arg(long, hide = true, value_name = "PATH")]
+    clipboard_daemon: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
+    if let Some(path) = cli.clipboard_daemon {
+        serve_clipboard(&path)?;
+        return Ok(());
+    }
+
     let mut capturer = if cli.all {
         Capturer::new_for_all_monitors()?
     } else if let Some(monitor) = cli.monitor {

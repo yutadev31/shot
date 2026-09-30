@@ -2,9 +2,12 @@ use std::{
     borrow::Cow,
     env, fs,
     io::{self, Cursor},
-    path::PathBuf,
+    path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
+
+#[cfg(target_os = "linux")]
+use std::process::{Command, Stdio};
 
 use arboard::{Clipboard, ImageData};
 use image::{
@@ -96,7 +99,7 @@ impl Capturer {
         let png = encode_png(&frame)?;
 
         let path = save_to_file(&png)?;
-        copy_to_clipboard(&png)?;
+        copy_to_clipboard(&path)?;
         println!("Saved screenshot to {}", path.display());
         println!("Copied screenshot to clipboard");
 
@@ -108,7 +111,7 @@ impl Capturer {
         let png = encode_png(&frame)?;
 
         let path = save_to_file(&png)?;
-        copy_to_clipboard(&png)?;
+        copy_to_clipboard(&path)?;
         println!("Saved screenshot to {}", path.display());
         println!("Copied screenshot to clipboard");
 
@@ -149,7 +152,64 @@ fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
     Ok(path)
 }
 
-fn copy_to_clipboard(png: &[u8]) -> crate::Result<()> {
+#[cfg(target_os = "linux")]
+fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
+    let executable = env::current_exe()?;
+    Command::new(executable)
+        .arg("--clipboard-daemon")
+        .arg(path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .current_dir("/")
+        .spawn()?;
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
+    let png = fs::read(path)?;
+    set_clipboard_image(&png)
+}
+
+pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
+    let png = fs::read(path)?;
+    let image = image::load_from_memory(&png)
+        .map_err(|_| crate::Error::ClipboardFailed)?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    let image = ImageData {
+        width: width as usize,
+        height: height as usize,
+        bytes: Cow::Owned(image.into_raw()),
+    };
+
+    #[cfg(target_os = "linux")]
+    {
+        use arboard::SetExtLinux;
+
+        let mut clipboard = Clipboard::new().map_err(|_| crate::Error::ClipboardFailed)?;
+        clipboard
+            .set()
+            .wait()
+            .image(image)
+            .map_err(|_| crate::Error::ClipboardFailed)?;
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        Clipboard::new()
+            .map_err(|_| crate::Error::ClipboardFailed)?
+            .set_image(image)
+            .map_err(|_| crate::Error::ClipboardFailed)?;
+    }
+
+    Ok(())
+}
+
+#[cfg(not(target_os = "linux"))]
+fn set_clipboard_image(png: &[u8]) -> crate::Result<()> {
     let image = image::load_from_memory(png)
         .map_err(|_| crate::Error::ClipboardFailed)?
         .into_rgba8();
