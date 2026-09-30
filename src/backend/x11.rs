@@ -22,8 +22,9 @@ pub struct X11Backend {
     blue_mask: u32,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 struct Monitor {
+    name: String,
     x: i16,
     y: i16,
     width: u16,
@@ -49,21 +50,29 @@ impl Backend for X11Backend {
     }
 
     fn capture_output(&mut self) -> crate::Result<Frame> {
-        self.capture_monitor(self.monitors[0])
+        self.capture_monitor(self.monitors[0].clone())
     }
 
     fn monitor_count(&self) -> usize {
         self.monitors.len()
     }
 
+    fn monitor_names(&self) -> Vec<String> {
+        self.monitors
+            .iter()
+            .map(|monitor| monitor.name.clone())
+            .collect()
+    }
+
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
-        let monitor = *self
-            .monitors
-            .get(monitor_index)
-            .ok_or(crate::Error::MonitorOutOfRange {
-                index: monitor_index,
-                count: self.monitors.len(),
-            })?;
+        let monitor =
+            self.monitors
+                .get(monitor_index)
+                .cloned()
+                .ok_or(crate::Error::MonitorOutOfRange {
+                    index: monitor_index,
+                    count: self.monitors.len(),
+                })?;
         self.monitors = vec![monitor];
         Ok(())
     }
@@ -93,16 +102,26 @@ impl X11Backend {
                 reply
                     .monitors
                     .into_iter()
-                    .map(|monitor| Monitor {
-                        x: monitor.x,
-                        y: monitor.y,
-                        width: monitor.width,
-                        height: monitor.height,
+                    .map(|monitor| {
+                        let name = connection
+                            .get_atom_name(monitor.name)
+                            .ok()
+                            .and_then(|cookie| cookie.reply().ok())
+                            .map(|reply| String::from_utf8_lossy(&reply.name).into_owned())
+                            .unwrap_or_else(|| format!("x11-monitor-{}", monitor.name));
+                        Monitor {
+                            name,
+                            x: monitor.x,
+                            y: monitor.y,
+                            width: monitor.width,
+                            height: monitor.height,
+                        }
                     })
                     .collect::<Vec<_>>()
             })
             .unwrap_or_else(|| {
                 vec![Monitor {
+                    name: "x11-monitor-0".to_string(),
                     x: 0,
                     y: 0,
                     width: screen.width_in_pixels,
@@ -110,10 +129,17 @@ impl X11Backend {
                 }]
             });
         let monitors = match monitor_index {
-            Some(index) => vec![*monitors.get(index).ok_or(crate::Error::MonitorOutOfRange {
-                index,
-                count: monitors.len(),
-            })?],
+            Some(index) => {
+                vec![
+                    monitors
+                        .get(index)
+                        .cloned()
+                        .ok_or(crate::Error::MonitorOutOfRange {
+                            index,
+                            count: monitors.len(),
+                        })?,
+                ]
+            }
             None => monitors,
         };
         let root = screen.root;

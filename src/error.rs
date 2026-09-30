@@ -24,6 +24,12 @@ pub enum Error {
     #[error("monitor index {index} is out of range (found {count} monitor(s))")]
     MonitorOutOfRange { index: usize, count: usize },
 
+    #[error("monitor {name:?} was not found (available monitors: {available:?})")]
+    MonitorNotFound {
+        name: String,
+        available: Vec<String>,
+    },
+
     #[error("invalid image buffer")]
     InvalidImageBuffer,
 

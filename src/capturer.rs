@@ -37,6 +37,20 @@ impl Capturer {
         Ok(Self { backend })
     }
 
+    pub fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
+        let mut capturer = Self::new_for_monitor_selection()?;
+        let monitor_index = capturer
+            .monitor_names()
+            .iter()
+            .position(|monitor_name| monitor_name == name)
+            .ok_or_else(|| crate::Error::MonitorNotFound {
+                name: name.to_string(),
+                available: capturer.monitor_names(),
+            })?;
+        capturer.select_monitor(monitor_index)?;
+        Ok(capturer)
+    }
+
     pub fn new_for_monitor_selection() -> crate::Result<Self> {
         let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
             Box::new(WaylandBackend::initialize_all()?)
@@ -53,6 +67,10 @@ impl Capturer {
 
     pub fn monitor_count(&self) -> usize {
         self.backend.monitor_count()
+    }
+
+    pub fn monitor_names(&self) -> Vec<String> {
+        self.backend.monitor_names()
     }
 
     pub fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {

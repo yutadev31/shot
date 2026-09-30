@@ -1,4 +1,4 @@
-use std::os::fd::AsFd;
+use std::{collections::HashMap, os::fd::AsFd};
 
 use wayland_client::{
     Connection, Dispatch, EventQueue, QueueHandle, WEnum,
@@ -20,6 +20,7 @@ pub struct WaylandBackend {
 
     shm: wl_shm::WlShm,
     outputs: Vec<wl_output::WlOutput>,
+    names: Vec<String>,
     manager: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 }
 
@@ -47,6 +48,10 @@ impl Backend for WaylandBackend {
 
     fn monitor_count(&self) -> usize {
         self.outputs.len()
+    }
+
+    fn monitor_names(&self) -> Vec<String> {
+        self.names.clone()
     }
 
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
@@ -94,8 +99,9 @@ impl WaylandBackend {
             None => output_globals,
         };
         let outputs = selected_globals
+            .clone()
             .into_iter()
-            .map(|(name, version)| globals.registry().bind(name, version.min(4), &qh, ()))
+            .map(|(name, version)| globals.registry().bind(name, version.min(4), &qh, name))
             .collect();
 
         let manager = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
@@ -108,11 +114,23 @@ impl WaylandBackend {
 
         event_queue.blocking_dispatch(&mut state)?;
 
+        let names = selected_globals
+            .iter()
+            .map(|(name, _)| {
+                state
+                    .output_names
+                    .get(name)
+                    .cloned()
+                    .unwrap_or_else(|| format!("wl-output-{name}"))
+            })
+            .collect();
+
         Ok(Self {
             state,
             event_queue,
             shm,
             outputs,
+            names,
             manager,
         })
     }
@@ -187,6 +205,7 @@ impl WaylandBackend {
 
 #[derive(Default)]
 struct State {
+    output_names: HashMap<u32, String>,
     buffer_info: Option<BufferInfo>,
     ready: bool,
     failed: bool,
@@ -199,6 +218,21 @@ impl State {
         self.ready = false;
         self.failed = false;
         self.unsupported_format = None;
+    }
+}
+
+impl Dispatch<wl_output::WlOutput, u32> for State {
+    fn event(
+        state: &mut Self,
+        _output: &wl_output::WlOutput,
+        event: wl_output::Event,
+        global_name: &u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        if let wl_output::Event::Name { name } = event {
+            state.output_names.insert(*global_name, name);
+        }
     }
 }
 

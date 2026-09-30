@@ -15,9 +15,9 @@ use shot::Capturer;
 #[derive(Debug, Parser)]
 #[command(name = "shot", about = "Capture a screenshot from a monitor")]
 struct Cli {
-    /// Monitor index to capture (zero-based); choose interactively when omitted
-    #[arg(short, long, value_name = "INDEX")]
-    monitor: Option<usize>,
+    /// Monitor ID to capture (for example HDMI-A-1); choose interactively when omitted
+    #[arg(short = 'm', long, value_name = "ID")]
+    monitor: Option<String>,
 
     /// Capture and stitch all monitors into one image
     #[arg(short = 'a', long)]
@@ -33,13 +33,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let mut capturer = if cli.all {
         Capturer::new_for_all_monitors()?
     } else if let Some(monitor) = cli.monitor {
-        Capturer::new_for_monitor(monitor)?
+        if let Ok(index) = monitor.parse::<usize>() {
+            Capturer::new_for_monitor(index)?
+        } else {
+            Capturer::new_for_monitor_name(&monitor)?
+        }
     } else {
         let mut capturer = Capturer::new_for_monitor_selection()?;
+        let monitor_names = capturer.monitor_names();
         let monitor = if cli.rofi {
-            select_monitor_with_rofi(capturer.monitor_count())?
+            select_monitor_with_rofi(&monitor_names)?
         } else if capturer.monitor_count() > 1 {
-            select_monitor(capturer.monitor_count())?
+            select_monitor(&monitor_names)?
         } else {
             Some(0)
         };
@@ -59,11 +64,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn select_monitor_with_rofi(count: usize) -> io::Result<Option<usize>> {
-    let choices = (0..count)
-        .map(|monitor| format!("Monitor {}", monitor + 1))
-        .collect::<Vec<_>>()
-        .join("\n");
+fn select_monitor_with_rofi(names: &[String]) -> io::Result<Option<usize>> {
+    let choices = names.join("\n");
 
     let mut child = Command::new("rofi")
         .args(["-dmenu", "-i", "-p", "Monitor"])
@@ -83,32 +85,19 @@ fn select_monitor_with_rofi(count: usize) -> io::Result<Option<usize>> {
     let selected = String::from_utf8(output.stdout)
         .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
     let selected = selected.trim();
-    let Some(index) = selected.strip_prefix("Monitor ") else {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("rofi returned an invalid monitor: {selected:?}"),
-        ));
-    };
-    let index = index.parse::<usize>().map_err(|error| {
-        io::Error::new(
-            io::ErrorKind::InvalidData,
-            format!("rofi returned an invalid monitor: {error}"),
-        )
-    })?;
-
-    index
-        .checked_sub(1)
-        .filter(|&index| index < count)
+    names
+        .iter()
+        .position(|name| name == selected)
         .map(Some)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidData,
-                format!("rofi returned a monitor outside the available range: {index}"),
+                format!("rofi returned an invalid monitor: {selected:?}"),
             )
         })
 }
 
-fn select_monitor(count: usize) -> io::Result<Option<usize>> {
+fn select_monitor(names: &[String]) -> io::Result<Option<usize>> {
     let mut stdout = io::stdout();
     println!("Select a monitor (↑/↓ or h/j/k/l, Enter to capture, Esc to cancel):");
     terminal::enable_raw_mode()?;
@@ -123,12 +112,12 @@ fn select_monitor(count: usize) -> io::Result<Option<usize>> {
                 cursor::RestorePosition,
                 terminal::Clear(ClearType::FromCursorDown)
             )?;
-            for monitor in 0..count {
+            for (monitor, name) in names.iter().enumerate() {
                 execute!(stdout, cursor::MoveToColumn(0))?;
                 if monitor == selected {
-                    writeln!(stdout, "> Monitor {}", monitor + 1)?;
+                    writeln!(stdout, "> {name}")?;
                 } else {
-                    writeln!(stdout, "  Monitor {}", monitor + 1)?;
+                    writeln!(stdout, "  {name}")?;
                 }
             }
             stdout.flush()?;
@@ -138,16 +127,16 @@ fn select_monitor(count: usize) -> io::Result<Option<usize>> {
             {
                 match key.code {
                     KeyCode::Up | KeyCode::Char('k') => {
-                        selected = selected.checked_sub(1).unwrap_or(count - 1);
+                        selected = selected.checked_sub(1).unwrap_or(names.len() - 1);
                     }
                     KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1) % count;
+                        selected = (selected + 1) % names.len();
                     }
                     KeyCode::Left | KeyCode::Char('h') => {
-                        selected = selected.checked_sub(1).unwrap_or(count - 1);
+                        selected = selected.checked_sub(1).unwrap_or(names.len() - 1);
                     }
                     KeyCode::Right | KeyCode::Char('l') => {
-                        selected = (selected + 1) % count;
+                        selected = (selected + 1) % names.len();
                     }
                     KeyCode::Enter => break Ok(Some(selected)),
                     KeyCode::Esc | KeyCode::Char('q') => break Ok(None),

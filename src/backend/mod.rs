@@ -13,5 +13,6 @@ pub trait Backend {
     fn capture_output(&mut self) -> crate::Result<Frame>;
     fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
     fn monitor_count(&self) -> usize;
+    fn monitor_names(&self) -> Vec<String>;
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()>;
 }
