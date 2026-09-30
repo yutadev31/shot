@@ -1,4 +1,7 @@
-use std::io::{self, Write};
+use std::{
+    io::{self, Write},
+    process::{Command, Stdio},
+};
 
 use clap::Parser;
 use crossterm::{
@@ -19,6 +22,10 @@ struct Cli {
     /// Capture and stitch all monitors into one image
     #[arg(short = 'a', long)]
     all: bool,
+
+    /// Select a monitor using rofi
+    #[arg(short = 'r', long, conflicts_with_all = ["monitor", "all"])]
+    rofi: bool,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -29,12 +36,18 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         Capturer::new_for_monitor(monitor)?
     } else {
         let mut capturer = Capturer::new_for_monitor_selection()?;
-        if capturer.monitor_count() > 1 {
-            let Some(monitor) = select_monitor(capturer.monitor_count())? else {
-                println!();
-                return Ok(());
-            };
+        let monitor = if cli.rofi {
+            select_monitor_with_rofi(capturer.monitor_count())?
+        } else if capturer.monitor_count() > 1 {
+            select_monitor(capturer.monitor_count())?
+        } else {
+            Some(0)
+        };
+        if let Some(monitor) = monitor {
             capturer.select_monitor(monitor)?;
+        } else {
+            println!();
+            return Ok(());
         }
         capturer
     };
@@ -44,6 +57,55 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         capturer.capture_output()?;
     }
     Ok(())
+}
+
+fn select_monitor_with_rofi(count: usize) -> io::Result<Option<usize>> {
+    let choices = (0..count)
+        .map(|monitor| format!("Monitor {}", monitor + 1))
+        .collect::<Vec<_>>()
+        .join("\n");
+
+    let mut child = Command::new("rofi")
+        .args(["-dmenu", "-i", "-p", "Monitor"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .spawn()?;
+    let Some(mut stdin) = child.stdin.take() else {
+        return Err(io::Error::other("failed to open rofi stdin"));
+    };
+    stdin.write_all(choices.as_bytes())?;
+
+    let output = child.wait_with_output()?;
+    if !output.status.success() {
+        return Ok(None);
+    }
+
+    let selected = String::from_utf8(output.stdout)
+        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
+    let selected = selected.trim();
+    let Some(index) = selected.strip_prefix("Monitor ") else {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("rofi returned an invalid monitor: {selected:?}"),
+        ));
+    };
+    let index = index.parse::<usize>().map_err(|error| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            format!("rofi returned an invalid monitor: {error}"),
+        )
+    })?;
+
+    index
+        .checked_sub(1)
+        .filter(|&index| index < count)
+        .map(Some)
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("rofi returned a monitor outside the available range: {index}"),
+            )
+        })
 }
 
 fn select_monitor(count: usize) -> io::Result<Option<usize>> {
