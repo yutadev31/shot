@@ -12,4 +12,6 @@ pub trait Backend {
         Self: Sized;
     fn capture_output(&mut self) -> crate::Result<Frame>;
     fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
+    fn monitor_count(&self) -> usize;
+    fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()>;
 }

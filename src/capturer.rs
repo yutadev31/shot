@@ -37,6 +37,28 @@ impl Capturer {
         Ok(Self { backend })
     }
 
+    pub fn new_for_monitor_selection() -> crate::Result<Self> {
+        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
+            Box::new(WaylandBackend::initialize_all()?)
+        } else if env::var_os("DISPLAY").is_some() {
+            Box::new(X11Backend::initialize_all()?)
+        } else {
+            return Err(crate::Error::X11(
+                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
+            ));
+        };
+
+        Ok(Self { backend })
+    }
+
+    pub fn monitor_count(&self) -> usize {
+        self.backend.monitor_count()
+    }
+
+    pub fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
+        self.backend.select_monitor(monitor_index)
+    }
+
     pub fn new_for_all_monitors() -> crate::Result<Self> {
         let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
             Box::new(WaylandBackend::initialize_all()?)

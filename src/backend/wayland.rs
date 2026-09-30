@@ -44,6 +44,23 @@ impl Backend for WaylandBackend {
         let output = self.outputs[0].clone();
         self.capture_one(&output)
     }
+
+    fn monitor_count(&self) -> usize {
+        self.outputs.len()
+    }
+
+    fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
+        let output =
+            self.outputs
+                .get(monitor_index)
+                .cloned()
+                .ok_or(crate::Error::MonitorOutOfRange {
+                    index: monitor_index,
+                    count: self.outputs.len(),
+                })?;
+        self.outputs = vec![output];
+        Ok(())
+    }
 }
 
 impl WaylandBackend {

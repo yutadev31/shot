@@ -51,6 +51,22 @@ impl Backend for X11Backend {
     fn capture_output(&mut self) -> crate::Result<Frame> {
         self.capture_monitor(self.monitors[0])
     }
+
+    fn monitor_count(&self) -> usize {
+        self.monitors.len()
+    }
+
+    fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
+        let monitor = *self
+            .monitors
+            .get(monitor_index)
+            .ok_or(crate::Error::MonitorOutOfRange {
+                index: monitor_index,
+                count: self.monitors.len(),
+            })?;
+        self.monitors = vec![monitor];
+        Ok(())
+    }
 }
 
 impl X11Backend {
