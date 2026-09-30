@@ -1,7 +1,7 @@
 use std::{
     borrow::Cow,
     env, fs,
-    io::{self, Cursor},
+    io::Cursor,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -27,45 +27,25 @@ impl Capturer {
     }
 
     pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
-        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
-            Box::new(WaylandBackend::initialize(monitor_index)?)
-        } else if env::var_os("DISPLAY").is_some() {
-            Box::new(X11Backend::initialize(monitor_index)?)
-        } else {
-            return Err(crate::Error::X11(
-                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
-            ));
-        };
-
-        Ok(Self { backend })
+        Self::with_backend(BackendSelection::Monitor(monitor_index))
     }
 
     pub fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
         let mut capturer = Self::new_for_monitor_selection()?;
-        let monitor_index = capturer
-            .monitor_names()
+        let names = capturer.monitor_names();
+        let monitor_index = names
             .iter()
             .position(|monitor_name| monitor_name == name)
             .ok_or_else(|| crate::Error::MonitorNotFound {
                 name: name.to_string(),
-                available: capturer.monitor_names(),
+                available: names,
             })?;
         capturer.select_monitor(monitor_index)?;
         Ok(capturer)
     }
 
     pub fn new_for_monitor_selection() -> crate::Result<Self> {
-        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
-            Box::new(WaylandBackend::initialize_all()?)
-        } else if env::var_os("DISPLAY").is_some() {
-            Box::new(X11Backend::initialize_all()?)
-        } else {
-            return Err(crate::Error::X11(
-                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
-            ));
-        };
-
-        Ok(Self { backend })
+        Self::with_backend(BackendSelection::All)
     }
 
     pub fn monitor_count(&self) -> usize {
@@ -81,12 +61,30 @@ impl Capturer {
     }
 
     pub fn new_for_all_monitors() -> crate::Result<Self> {
+        Self::with_backend(BackendSelection::All)
+    }
+
+    pub fn capture_output(&mut self) -> crate::Result<()> {
+        self.capture(|backend| backend.capture_output())
+    }
+
+    pub fn capture_all_outputs(&mut self) -> crate::Result<()> {
+        self.capture(|backend| backend.capture_all_outputs())
+    }
+
+    fn with_backend(selection: BackendSelection) -> crate::Result<Self> {
         let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
-            Box::new(WaylandBackend::initialize_all()?)
+            match selection {
+                BackendSelection::Monitor(index) => Box::new(WaylandBackend::initialize(index)?),
+                BackendSelection::All => Box::new(WaylandBackend::initialize_all()?),
+            }
         } else if env::var_os("DISPLAY").is_some() {
-            Box::new(X11Backend::initialize_all()?)
+            match selection {
+                BackendSelection::Monitor(index) => Box::new(X11Backend::initialize(index)?),
+                BackendSelection::All => Box::new(X11Backend::initialize_all()?),
+            }
         } else {
-            return Err(crate::Error::X11(
+            return Err(crate::Error::DisplayUnavailable(
                 "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
             ));
         };
@@ -94,8 +92,11 @@ impl Capturer {
         Ok(Self { backend })
     }
 
-    pub fn capture_output(&mut self) -> crate::Result<()> {
-        let frame = self.backend.capture_output()?;
+    fn capture<F>(&mut self, capture: F) -> crate::Result<()>
+    where
+        F: FnOnce(&mut dyn Backend) -> crate::Result<crate::frame::Frame>,
+    {
+        let frame = capture(self.backend.as_mut())?;
         let png = encode_png(&frame)?;
 
         let path = save_to_file(&png)?;
@@ -105,18 +106,11 @@ impl Capturer {
 
         Ok(())
     }
+}
 
-    pub fn capture_all_outputs(&mut self) -> crate::Result<()> {
-        let frame = self.backend.capture_all_outputs()?;
-        let png = encode_png(&frame)?;
-
-        let path = save_to_file(&png)?;
-        copy_to_clipboard(&path)?;
-        println!("Saved screenshot to {}", path.display());
-        println!("Copied screenshot to clipboard");
-
-        Ok(())
-    }
+enum BackendSelection {
+    Monitor(usize),
+    All,
 }
 
 fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
@@ -134,20 +128,41 @@ fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
 
 fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
     let home = env::var_os("HOME").ok_or_else(|| {
-        io::Error::new(
-            io::ErrorKind::NotFound,
+        crate::Error::Io(std::io::Error::new(
+            std::io::ErrorKind::NotFound,
             "HOME environment variable is not set",
-        )
+        ))
     })?;
     let directory = PathBuf::from(home).join("Pictures").join("Screenshots");
     fs::create_dir_all(&directory)?;
 
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
-        .map_err(|error| io::Error::other(format!("system clock is before Unix epoch: {error}")))?
-        .as_secs();
-    let path = directory.join(format!("screenshot-{timestamp}.png"));
-    fs::write(&path, png)?;
+        .map_err(|error| {
+            crate::Error::Io(std::io::Error::other(format!(
+                "system clock is before Unix epoch: {error}"
+            )))
+        })?
+        .as_millis();
+    let mut path = directory.join(format!("screenshot-{timestamp}.png"));
+    for suffix in 1.. {
+        match fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+        {
+            Ok(file) => {
+                use std::io::Write;
+                let mut file = file;
+                file.write_all(png)?;
+                break;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                path = directory.join(format!("screenshot-{timestamp}-{suffix}.png"));
+            }
+            Err(error) => return Err(error.into()),
+        }
+    }
 
     Ok(path)
 }
@@ -175,15 +190,7 @@ fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
 
 pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
     let png = fs::read(path)?;
-    let image = image::load_from_memory(&png)
-        .map_err(|_| crate::Error::ClipboardFailed)?
-        .into_rgba8();
-    let (width, height) = image.dimensions();
-    let image = ImageData {
-        width: width as usize,
-        height: height as usize,
-        bytes: Cow::Owned(image.into_raw()),
-    };
+    let image = image_data_from_png(&png)?;
 
     #[cfg(target_os = "linux")]
     {
@@ -210,15 +217,7 @@ pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
 
 #[cfg(not(target_os = "linux"))]
 fn set_clipboard_image(png: &[u8]) -> crate::Result<()> {
-    let image = image::load_from_memory(png)
-        .map_err(|_| crate::Error::ClipboardFailed)?
-        .into_rgba8();
-    let (width, height) = image.dimensions();
-    let image = ImageData {
-        width: width as usize,
-        height: height as usize,
-        bytes: Cow::Owned(image.into_raw()),
-    };
+    let image = image_data_from_png(png)?;
 
     Clipboard::new()
         .map_err(|_| crate::Error::ClipboardFailed)?
@@ -226,4 +225,16 @@ fn set_clipboard_image(png: &[u8]) -> crate::Result<()> {
         .map_err(|_| crate::Error::ClipboardFailed)?;
 
     Ok(())
+}
+
+fn image_data_from_png(png: &[u8]) -> crate::Result<ImageData<'static>> {
+    let image = image::load_from_memory(png)
+        .map_err(|_| crate::Error::ClipboardFailed)?
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(ImageData {
+        width: width as usize,
+        height: height as usize,
+        bytes: Cow::Owned(image.into_raw()),
+    })
 }

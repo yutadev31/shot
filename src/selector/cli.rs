@@ -8,6 +8,9 @@ use crossterm::{
 };
 
 pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
+    if names.is_empty() {
+        return Ok(None);
+    }
     let mut stdout = io::stdout();
     println!("Select a monitor (↑/↓ or h/j/k/l, Enter to capture, Esc to cancel):");
     terminal::enable_raw_mode()?;
@@ -36,17 +39,11 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
                 && key.kind.is_press()
             {
                 match key.code {
-                    KeyCode::Up | KeyCode::Char('k') => {
-                        selected = selected.checked_sub(1).unwrap_or(names.len() - 1);
+                    KeyCode::Up | KeyCode::Left | KeyCode::Char('k') | KeyCode::Char('h') => {
+                        selected = previous(selected, names.len());
                     }
-                    KeyCode::Down | KeyCode::Char('j') => {
-                        selected = (selected + 1) % names.len();
-                    }
-                    KeyCode::Left | KeyCode::Char('h') => {
-                        selected = selected.checked_sub(1).unwrap_or(names.len() - 1);
-                    }
-                    KeyCode::Right | KeyCode::Char('l') => {
-                        selected = (selected + 1) % names.len();
+                    KeyCode::Down | KeyCode::Right | KeyCode::Char('j') | KeyCode::Char('l') => {
+                        selected = next(selected, names.len());
                     }
                     KeyCode::Enter => break Ok(Some(selected)),
                     KeyCode::Esc | KeyCode::Char('q') => break Ok(None),
@@ -61,4 +58,12 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
         Ok(()) => result,
         Err(error) => Err(error),
     }
+}
+
+fn previous(selected: usize, count: usize) -> usize {
+    selected.checked_sub(1).unwrap_or(count - 1)
+}
+
+fn next(selected: usize, count: usize) -> usize {
+    (selected + 1) % count
 }

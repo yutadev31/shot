@@ -9,14 +9,15 @@ use x11rb::{
 };
 
 use crate::{
-    backend::Backend,
-    frame::{Frame, PixelFormat},
+    backend::{Backend, PositionedFrame, stitch_positioned},
+    frame::Frame,
 };
 
 pub struct X11Backend {
     connection: RustConnection,
     root: u32,
     monitors: Vec<Monitor>,
+    selected_monitor: Option<usize>,
     red_mask: u32,
     green_mask: u32,
     blue_mask: u32,
@@ -44,13 +45,25 @@ impl Backend for X11Backend {
         let monitors = self.monitors.clone();
         let mut frames = Vec::with_capacity(monitors.len());
         for monitor in monitors {
-            frames.push(self.capture_monitor(monitor)?);
+            let x = i32::from(monitor.x);
+            let y = i32::from(monitor.y);
+            frames.push(PositionedFrame {
+                frame: self.capture_monitor(monitor)?,
+                x,
+                y,
+            });
         }
-        crate::frame::stitch_horizontally(&frames)
+        stitch_positioned(&frames)
     }
 
     fn capture_output(&mut self) -> crate::Result<Frame> {
-        self.capture_monitor(self.monitors[0].clone())
+        let index = self.selected_monitor.unwrap_or(0);
+        let monitor = self
+            .monitors
+            .get(index)
+            .cloned()
+            .ok_or(crate::Error::NoMonitors)?;
+        self.capture_monitor(monitor)
     }
 
     fn monitor_count(&self) -> usize {
@@ -65,15 +78,13 @@ impl Backend for X11Backend {
     }
 
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
-        let monitor =
-            self.monitors
-                .get(monitor_index)
-                .cloned()
-                .ok_or(crate::Error::MonitorOutOfRange {
-                    index: monitor_index,
-                    count: self.monitors.len(),
-                })?;
-        self.monitors = vec![monitor];
+        if monitor_index >= self.monitors.len() {
+            return Err(crate::Error::MonitorOutOfRange {
+                index: monitor_index,
+                count: self.monitors.len(),
+            });
+        }
+        self.selected_monitor = Some(monitor_index);
         Ok(())
     }
 }
@@ -81,18 +92,18 @@ impl Backend for X11Backend {
 impl X11Backend {
     fn initialize_with_monitors(monitor_index: Option<usize>) -> crate::Result<Self> {
         let (connection, screen_num) =
-            x11rb::connect(None).map_err(|error| crate::Error::X11(error.to_string()))?;
+            x11rb::connect(None).map_err(|error| crate::Error::X11Connect(error.to_string()))?;
         let setup = connection.setup();
         let screen = setup
             .roots
             .get(screen_num)
-            .ok_or_else(|| crate::Error::X11("X11 screen is unavailable".to_string()))?;
+            .ok_or_else(|| crate::Error::X11Screen("screen index is unavailable".to_string()))?;
         let visual = screen
             .allowed_depths
             .iter()
             .flat_map(|depth| depth.visuals.iter())
             .find(|visual| visual.visual_id == screen.root_visual)
-            .ok_or_else(|| crate::Error::X11("root visual is unavailable".to_string()))?;
+            .ok_or_else(|| crate::Error::X11Visual("root visual is unavailable".to_string()))?;
 
         let monitors = connection
             .randr_get_monitors(screen.root, true)
@@ -128,20 +139,14 @@ impl X11Backend {
                     height: screen.height_in_pixels,
                 }]
             });
-        let monitors = match monitor_index {
-            Some(index) => {
-                vec![
-                    monitors
-                        .get(index)
-                        .cloned()
-                        .ok_or(crate::Error::MonitorOutOfRange {
-                            index,
-                            count: monitors.len(),
-                        })?,
-                ]
-            }
-            None => monitors,
-        };
+        if let Some(index) = monitor_index
+            && index >= monitors.len()
+        {
+            return Err(crate::Error::MonitorOutOfRange {
+                index,
+                count: monitors.len(),
+            });
+        }
         let root = screen.root;
         let red_mask = visual.red_mask;
         let green_mask = visual.green_mask;
@@ -151,6 +156,7 @@ impl X11Backend {
             connection,
             root,
             monitors,
+            selected_monitor: monitor_index,
             red_mask,
             green_mask,
             blue_mask,
@@ -169,16 +175,16 @@ impl X11Backend {
                 monitor.height,
                 u32::MAX,
             )
-            .map_err(|error| crate::Error::X11(error.to_string()))?
+            .map_err(|error| crate::Error::X11Image(error.to_string()))?
             .reply()
-            .map_err(|error| crate::Error::X11(error.to_string()))?;
+            .map_err(|error| crate::Error::X11Image(error.to_string()))?;
         let image = Image::get_from_reply(
             self.connection.setup(),
             monitor.width,
             monitor.height,
             reply,
         )
-        .map_err(|error| crate::Error::X11(error.to_string()))?;
+        .map_err(|error| crate::Error::X11Image(error.to_string()))?;
         let capacity = monitor.width as usize * monitor.height as usize * 4;
         let mut data = Vec::with_capacity(capacity);
         for y in 0..monitor.height {
@@ -196,7 +202,6 @@ impl X11Backend {
             data,
             width: monitor.width as u32,
             height: monitor.height as u32,
-            format: PixelFormat::Rgba8,
         })
     }
 }

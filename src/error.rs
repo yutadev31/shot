@@ -24,6 +24,9 @@ pub enum Error {
     #[error("monitor index {index} is out of range (found {count} monitor(s))")]
     MonitorOutOfRange { index: usize, count: usize },
 
+    #[error("no monitors are available")]
+    NoMonitors,
+
     #[error("monitor {name:?} was not found (available monitors: {available:?})")]
     MonitorNotFound {
         name: String,
@@ -39,8 +42,20 @@ pub enum Error {
     #[error("failed to access clipboard")]
     ClipboardFailed,
 
-    #[error("X11 operation failed: {0}")]
-    X11(String),
+    #[error("display server is unavailable: {0}")]
+    DisplayUnavailable(String),
+
+    #[error("failed to connect to X11: {0}")]
+    X11Connect(String),
+
+    #[error("X11 screen is unavailable: {0}")]
+    X11Screen(String),
+
+    #[error("X11 visual is unavailable: {0}")]
+    X11Visual(String),
+
+    #[error("X11 image operation failed: {0}")]
+    X11Image(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;

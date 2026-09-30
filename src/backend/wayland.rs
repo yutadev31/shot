@@ -10,8 +10,8 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 use crate::{
-    backend::Backend,
-    frame::{Frame, PixelFormat},
+    backend::{Backend, PositionedFrame, stitch_positioned},
+    frame::Frame,
 };
 
 pub struct WaylandBackend {
@@ -19,8 +19,9 @@ pub struct WaylandBackend {
     event_queue: EventQueue<State>,
 
     shm: wl_shm::WlShm,
-    outputs: Vec<wl_output::WlOutput>,
+    outputs: Vec<Output>,
     names: Vec<String>,
+    selected_monitor: Option<usize>,
     manager: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
 }
 
@@ -36,14 +37,30 @@ impl Backend for WaylandBackend {
     fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
         let mut frames = Vec::with_capacity(self.outputs.len());
         for output in self.outputs.clone() {
-            frames.push(self.capture_one(&output)?);
+            let frame = self.capture_one(&output.proxy)?;
+            let layout = self
+                .state
+                .output_layouts
+                .get(&output.global_name)
+                .copied()
+                .ok_or(crate::Error::WaylandScreencopyFailed)?;
+            frames.push(PositionedFrame {
+                frame,
+                x: layout.x,
+                y: layout.y,
+            });
         }
-        crate::frame::stitch_horizontally(&frames)
+        stitch_positioned(&frames)
     }
 
     fn capture_output(&mut self) -> crate::Result<Frame> {
-        let output = self.outputs[0].clone();
-        self.capture_one(&output)
+        let index = self.selected_monitor.unwrap_or(0);
+        let output = self
+            .outputs
+            .get(index)
+            .cloned()
+            .ok_or(crate::Error::NoMonitors)?;
+        self.capture_one(&output.proxy)
     }
 
     fn monitor_count(&self) -> usize {
@@ -55,15 +72,13 @@ impl Backend for WaylandBackend {
     }
 
     fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
-        let output =
-            self.outputs
-                .get(monitor_index)
-                .cloned()
-                .ok_or(crate::Error::MonitorOutOfRange {
-                    index: monitor_index,
-                    count: self.outputs.len(),
-                })?;
-        self.outputs = vec![output];
+        if monitor_index >= self.outputs.len() {
+            return Err(crate::Error::MonitorOutOfRange {
+                index: monitor_index,
+                count: self.outputs.len(),
+            });
+        }
+        self.selected_monitor = Some(monitor_index);
         Ok(())
     }
 }
@@ -85,23 +100,25 @@ impl WaylandBackend {
                 .collect::<Vec<_>>()
         });
         let output_count = output_globals.len();
-        let selected_globals = match monitor_index {
-            Some(index) => {
-                vec![
-                    *output_globals
-                        .get(index)
-                        .ok_or(crate::Error::MonitorOutOfRange {
-                            index,
-                            count: output_count,
-                        })?,
-                ]
-            }
-            None => output_globals,
-        };
+        if output_count == 0 {
+            return Err(crate::Error::NoMonitors);
+        }
+        if let Some(index) = monitor_index
+            && index >= output_count
+        {
+            return Err(crate::Error::MonitorOutOfRange {
+                index,
+                count: output_count,
+            });
+        }
+        let selected_globals = output_globals.clone();
         let outputs = selected_globals
             .clone()
             .into_iter()
-            .map(|(name, version)| globals.registry().bind(name, version.min(4), &qh, name))
+            .map(|(name, version)| Output {
+                global_name: name,
+                proxy: globals.registry().bind(name, version.min(4), &qh, name),
+            })
             .collect();
 
         let manager = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
@@ -131,6 +148,7 @@ impl WaylandBackend {
             shm,
             outputs,
             names,
+            selected_monitor: monitor_index,
             manager,
         })
     }
@@ -153,7 +171,11 @@ impl WaylandBackend {
             return Err(crate::Error::WaylandScreencopyFailed);
         }
 
-        let info = self.state.buffer_info.take().unwrap();
+        let info = self
+            .state
+            .buffer_info
+            .take()
+            .ok_or(crate::Error::WaylandScreencopyFailed)?;
 
         let row_size = info.width as usize * 4;
         let stride = info.stride as usize;
@@ -168,6 +190,7 @@ impl WaylandBackend {
         let file = tempfile::tempfile()?;
         file.set_len(size as u64)?;
 
+        // The file was resized to `size`, so mapping the complete file is valid.
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
 
         let pool = self.shm.create_pool(file.as_fd(), size_i32, &qh, ());
@@ -198,7 +221,6 @@ impl WaylandBackend {
             data,
             width: info.width,
             height: info.height,
-            format: PixelFormat::Rgb8,
         })
     }
 }
@@ -206,6 +228,7 @@ impl WaylandBackend {
 #[derive(Default)]
 struct State {
     output_names: HashMap<u32, String>,
+    output_layouts: HashMap<u32, OutputLayout>,
     buffer_info: Option<BufferInfo>,
     ready: bool,
     failed: bool,
@@ -230,8 +253,15 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
-        if let wl_output::Event::Name { name } = event {
-            state.output_names.insert(*global_name, name);
+        match event {
+            wl_output::Event::Name { name } => {
+                state.output_names.insert(*global_name, name);
+            }
+            wl_output::Event::Geometry { x, y, .. } => {
+                state.output_layouts.entry(*global_name).or_default().x = x;
+                state.output_layouts.entry(*global_name).or_default().y = y;
+            }
+            _ => {}
         }
     }
 }
@@ -307,6 +337,18 @@ struct BufferInfo {
     width: u32,
     height: u32,
     stride: u32,
+}
+
+#[derive(Clone, Copy, Default)]
+struct OutputLayout {
+    x: i32,
+    y: i32,
+}
+
+#[derive(Clone)]
+struct Output {
+    global_name: u32,
+    proxy: wl_output::WlOutput,
 }
 
 fn convert_to_rgba(
