@@ -15,7 +15,7 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
-use crate::backend::{Backend, wayland::WaylandBackend, x11::X11Backend};
+use crate::backend::{Backend, BackendTarget, wayland::WaylandBackend, x11::X11Backend};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
@@ -27,7 +27,7 @@ impl Capturer {
     }
 
     pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
-        Self::with_backend(BackendSelection::Monitor(monitor_index))
+        Self::with_backend(BackendTarget::Monitor(monitor_index))
     }
 
     pub fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
@@ -45,7 +45,7 @@ impl Capturer {
     }
 
     pub fn new_for_monitor_selection() -> crate::Result<Self> {
-        Self::with_backend(BackendSelection::All)
+        Self::with_backend(BackendTarget::All)
     }
 
     pub fn monitor_count(&self) -> usize {
@@ -61,7 +61,7 @@ impl Capturer {
     }
 
     pub fn new_for_all_monitors() -> crate::Result<Self> {
-        Self::with_backend(BackendSelection::All)
+        Self::with_backend(BackendTarget::All)
     }
 
     pub fn capture_output(&mut self) -> crate::Result<()> {
@@ -72,17 +72,11 @@ impl Capturer {
         self.capture(|backend| backend.capture_all_outputs())
     }
 
-    fn with_backend(selection: BackendSelection) -> crate::Result<Self> {
+    fn with_backend(target: BackendTarget) -> crate::Result<Self> {
         let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
-            match selection {
-                BackendSelection::Monitor(index) => Box::new(WaylandBackend::initialize(index)?),
-                BackendSelection::All => Box::new(WaylandBackend::initialize_all()?),
-            }
+            Box::new(WaylandBackend::initialize(target)?)
         } else if env::var_os("DISPLAY").is_some() {
-            match selection {
-                BackendSelection::Monitor(index) => Box::new(X11Backend::initialize(index)?),
-                BackendSelection::All => Box::new(X11Backend::initialize_all()?),
-            }
+            Box::new(X11Backend::initialize(target)?)
         } else {
             return Err(crate::Error::DisplayUnavailable(
                 "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
@@ -106,11 +100,6 @@ impl Capturer {
 
         Ok(())
     }
-}
-
-enum BackendSelection {
-    Monitor(usize),
-    All,
 }
 
 fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {

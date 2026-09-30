@@ -3,6 +3,12 @@ use crate::frame::Frame;
 pub mod wayland;
 pub mod x11;
 
+#[derive(Clone, Copy)]
+pub enum BackendTarget {
+    Monitor(usize),
+    All,
+}
+
 #[derive(Debug)]
 pub(crate) struct PositionedFrame {
     pub frame: Frame,
@@ -72,10 +78,7 @@ pub(crate) fn stitch_positioned(frames: &[PositionedFrame]) -> crate::Result<Fra
 }
 
 pub trait Backend {
-    fn initialize(monitor_index: usize) -> crate::Result<Self>
-    where
-        Self: Sized;
-    fn initialize_all() -> crate::Result<Self>
+    fn initialize(target: BackendTarget) -> crate::Result<Self>
     where
         Self: Sized;
     fn capture_output(&mut self) -> crate::Result<Frame>;

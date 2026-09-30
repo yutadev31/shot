@@ -10,7 +10,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
 };
 
 use crate::{
-    backend::{Backend, PositionedFrame, stitch_positioned},
+    backend::{Backend, BackendTarget, PositionedFrame, stitch_positioned},
     frame::Frame,
 };
 
@@ -26,12 +26,12 @@ pub struct WaylandBackend {
 }
 
 impl Backend for WaylandBackend {
-    fn initialize(monitor_index: usize) -> crate::Result<Self> {
-        Self::initialize_with_outputs(Some(monitor_index))
-    }
-
-    fn initialize_all() -> crate::Result<Self> {
-        Self::initialize_with_outputs(None)
+    fn initialize(target: BackendTarget) -> crate::Result<Self> {
+        let monitor_index = match target {
+            BackendTarget::Monitor(index) => Some(index),
+            BackendTarget::All => None,
+        };
+        Self::initialize_with_outputs(monitor_index)
     }
 
     fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
