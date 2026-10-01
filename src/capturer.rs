@@ -6,7 +6,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
-#[cfg(target_os = "linux")]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use std::process::{Command, Stdio};
 
 use arboard::{Clipboard, ImageData};
@@ -15,11 +15,14 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
-#[cfg(all(target_os = "linux", feature = "wayland"))]
+#[cfg(all(
+    not(any(target_os = "windows", target_os = "macos")),
+    feature = "wayland"
+))]
 use crate::backend::wayland::WaylandBackend;
 #[cfg(all(target_os = "windows", feature = "windows"))]
 use crate::backend::windows::WindowsBackend;
-#[cfg(all(target_os = "linux", feature = "x11"))]
+#[cfg(all(not(any(target_os = "windows", target_os = "macos")), feature = "x11"))]
 use crate::backend::x11::X11Backend;
 use crate::backend::{Backend, BackendTarget};
 
@@ -85,12 +88,15 @@ impl Capturer {
     }
 
     fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
-        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        #[cfg(all(
+            not(any(target_os = "windows", target_os = "macos")),
+            feature = "wayland"
+        ))]
         if env::var_os("WAYLAND_DISPLAY").is_some() {
             return Ok(Box::new(WaylandBackend::initialize(target)?));
         }
 
-        #[cfg(all(target_os = "linux", feature = "x11"))]
+        #[cfg(all(not(any(target_os = "windows", target_os = "macos")), feature = "x11"))]
         if env::var_os("DISPLAY").is_some() {
             return Ok(Box::new(X11Backend::initialize(target)?));
         }
@@ -98,23 +104,38 @@ impl Capturer {
         #[cfg(all(target_os = "windows", feature = "windows"))]
         return Ok(Box::new(WindowsBackend::initialize(target)?));
 
-        #[cfg(all(target_os = "linux", feature = "wayland", feature = "x11"))]
+        #[cfg(all(
+            not(any(target_os = "windows", target_os = "macos")),
+            feature = "wayland",
+            feature = "x11"
+        ))]
         return Err(crate::Error::DisplayUnavailable(
             "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
         ));
 
-        #[cfg(all(target_os = "linux", feature = "wayland", not(feature = "x11")))]
+        #[cfg(all(
+            not(any(target_os = "windows", target_os = "macos")),
+            feature = "wayland",
+            not(feature = "x11")
+        ))]
         return Err(crate::Error::DisplayUnavailable(
             "WAYLAND_DISPLAY is not set".to_string(),
         ));
 
-        #[cfg(all(target_os = "linux", not(feature = "wayland"), feature = "x11"))]
+        #[cfg(all(
+            not(any(target_os = "windows", target_os = "macos")),
+            not(feature = "wayland"),
+            feature = "x11"
+        ))]
         return Err(crate::Error::DisplayUnavailable(
             "DISPLAY is not set".to_string(),
         ));
 
         #[cfg(not(any(
-            all(target_os = "linux", any(feature = "wayland", feature = "x11")),
+            all(
+                not(any(target_os = "windows", target_os = "macos")),
+                any(feature = "wayland", feature = "x11")
+            ),
             all(target_os = "windows", feature = "windows")
         )))]
         return Err(crate::Error::DisplayUnavailable(
@@ -194,7 +215,7 @@ fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
     Ok(path)
 }
 
-#[cfg(target_os = "linux")]
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
 fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
     let executable = env::current_exe()?;
     Command::new(executable)
@@ -209,7 +230,7 @@ fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn copy_to_clipboard(path: &Path) -> crate::Result<()> {
     let png = fs::read(path)?;
     set_clipboard_image(&png)
@@ -219,7 +240,7 @@ pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
     let png = fs::read(path)?;
     let image = image_data_from_png(&png)?;
 
-    #[cfg(target_os = "linux")]
+    #[cfg(not(any(target_os = "windows", target_os = "macos")))]
     {
         use arboard::SetExtLinux;
 
@@ -231,7 +252,7 @@ pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
             .map_err(|_| crate::Error::ClipboardFailed)?;
     }
 
-    #[cfg(not(target_os = "linux"))]
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     {
         Clipboard::new()
             .map_err(|_| crate::Error::ClipboardFailed)?
@@ -242,7 +263,7 @@ pub fn serve_clipboard(path: &Path) -> crate::Result<()> {
     Ok(())
 }
 
-#[cfg(not(target_os = "linux"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn set_clipboard_image(png: &[u8]) -> crate::Result<()> {
     let image = image_data_from_png(png)?;
 
