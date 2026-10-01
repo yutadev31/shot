@@ -122,30 +122,32 @@ unsafe extern "system" fn enumerate_monitor(
     _rect: *mut RECT,
     data: LPARAM,
 ) -> BOOL {
-    let monitors = &mut *(data as *mut Vec<Monitor>);
-    let mut info = MONITORINFOEXW {
-        monitorInfo: MONITORINFO {
-            cbSize: mem::size_of::<MONITORINFOEXW>() as u32,
-            ..unsafe { mem::zeroed() }
-        },
-        szDevice: [0; 32],
-    };
-    if GetMonitorInfoW(monitor, &mut info.monitorInfo) == 0 {
-        return 1;
-    }
+    unsafe {
+        let monitors = &mut *(data as *mut Vec<Monitor>);
+        let mut info = MONITORINFOEXW {
+            monitorInfo: MONITORINFO {
+                cbSize: mem::size_of::<MONITORINFOEXW>() as u32,
+                ..mem::zeroed()
+            },
+            szDevice: [0; 32],
+        };
+        if GetMonitorInfoW(monitor, &mut info.monitorInfo) == 0 {
+            return 1;
+        }
 
-    let name = String::from_utf16_lossy(
-        &info.szDevice[..info
-            .szDevice
-            .iter()
-            .position(|character| *character == 0)
-            .unwrap_or(info.szDevice.len())],
-    );
-    monitors.push(Monitor {
-        name,
-        rect: info.monitorInfo.rcMonitor,
-    });
-    1
+        let name = String::from_utf16_lossy(
+            &info.szDevice[..info
+                .szDevice
+                .iter()
+                .position(|character| *character == 0)
+                .unwrap_or(info.szDevice.len())],
+        );
+        monitors.push(Monitor {
+            name,
+            rect: info.monitorInfo.rcMonitor,
+        });
+        1
+    }
 }
 
 fn capture_monitor(rect: &RECT) -> crate::Result<Frame> {
@@ -174,72 +176,76 @@ unsafe fn capture_with_dc(
     width: i32,
     height: i32,
 ) -> crate::Result<Frame> {
-    let memory_dc = CreateCompatibleDC(screen_dc);
-    if memory_dc.is_null() {
-        return Err(crate::Error::WindowsCapture(
-            "CreateCompatibleDC failed".to_string(),
-        ));
-    }
-    let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
-    if bitmap.is_null() {
+    unsafe {
+        let memory_dc = CreateCompatibleDC(screen_dc);
+        if memory_dc.is_null() {
+            return Err(crate::Error::WindowsCapture(
+                "CreateCompatibleDC failed".to_string(),
+            ));
+        }
+        let bitmap = CreateCompatibleBitmap(screen_dc, width, height);
+        if bitmap.is_null() {
+            DeleteDC(memory_dc);
+            return Err(crate::Error::WindowsCapture(
+                "CreateCompatibleBitmap failed".to_string(),
+            ));
+        }
+        let old_bitmap = SelectObject(memory_dc, bitmap as _);
+
+        let result = if BitBlt(
+            memory_dc, 0, 0, width, height, screen_dc, rect.left, rect.top, SRCCOPY,
+        ) == 0
+        {
+            Err(crate::Error::WindowsCapture("BitBlt failed".to_string()))
+        } else {
+            read_bitmap(memory_dc, bitmap, width, height)
+        };
+
+        SelectObject(memory_dc, old_bitmap);
+        DeleteObject(bitmap as _);
         DeleteDC(memory_dc);
-        return Err(crate::Error::WindowsCapture(
-            "CreateCompatibleBitmap failed".to_string(),
-        ));
+        result
     }
-    let old_bitmap = SelectObject(memory_dc, bitmap as _);
-
-    let result = if BitBlt(
-        memory_dc, 0, 0, width, height, screen_dc, rect.left, rect.top, SRCCOPY,
-    ) == 0
-    {
-        Err(crate::Error::WindowsCapture("BitBlt failed".to_string()))
-    } else {
-        read_bitmap(memory_dc, bitmap, width, height)
-    };
-
-    SelectObject(memory_dc, old_bitmap);
-    DeleteObject(bitmap as _);
-    DeleteDC(memory_dc);
-    result
 }
 
 unsafe fn read_bitmap(dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> crate::Result<Frame> {
-    let mut info = BITMAPINFO {
-        bmiHeader: BITMAPINFOHEADER {
-            biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
-            biWidth: width,
-            biHeight: -height,
-            biPlanes: 1,
-            biBitCount: 32,
-            biCompression: BI_RGB,
-            ..mem::zeroed()
-        },
-        bmiColors: [unsafe { mem::zeroed() }],
-    };
-    let size = (width as usize)
-        .checked_mul(height as usize)
-        .and_then(|pixels| pixels.checked_mul(4))
-        .ok_or(crate::Error::InvalidImageBuffer)?;
-    let mut data = vec![0u8; size];
-    if GetDIBits(
-        dc,
-        bitmap,
-        0,
-        height as u32,
-        data.as_mut_ptr() as *mut _,
-        &mut info,
-        DIB_RGB_COLORS,
-    ) == 0
-    {
-        return Err(crate::Error::WindowsCapture("GetDIBits failed".to_string()));
+    unsafe {
+        let mut info = BITMAPINFO {
+            bmiHeader: BITMAPINFOHEADER {
+                biSize: mem::size_of::<BITMAPINFOHEADER>() as u32,
+                biWidth: width,
+                biHeight: -height,
+                biPlanes: 1,
+                biBitCount: 32,
+                biCompression: BI_RGB,
+                ..mem::zeroed()
+            },
+            bmiColors: [mem::zeroed()],
+        };
+        let size = (width as usize)
+            .checked_mul(height as usize)
+            .and_then(|pixels| pixels.checked_mul(4))
+            .ok_or(crate::Error::InvalidImageBuffer)?;
+        let mut data = vec![0u8; size];
+        if GetDIBits(
+            dc,
+            bitmap,
+            0,
+            height as u32,
+            data.as_mut_ptr() as *mut _,
+            &mut info,
+            DIB_RGB_COLORS,
+        ) == 0
+        {
+            return Err(crate::Error::WindowsCapture("GetDIBits failed".to_string()));
+        }
+        for pixel in data.chunks_exact_mut(4) {
+            pixel.swap(0, 2);
+        }
+        Ok(Frame {
+            data,
+            width: width as u32,
+            height: height as u32,
+        })
     }
-    for pixel in data.chunks_exact_mut(4) {
-        pixel.swap(0, 2);
-    }
-    Ok(Frame {
-        data,
-        width: width as u32,
-        height: height as u32,
-    })
 }
