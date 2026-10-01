@@ -1,11 +1,13 @@
 use std::{
     borrow::Cow,
-    env, fs,
+    fs,
     io::Cursor,
     path::{Path, PathBuf},
     time::{SystemTime, UNIX_EPOCH},
 };
 
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+use std::env;
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]
 use std::process::{Command, Stdio};
 
@@ -173,15 +175,14 @@ fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
 }
 
 fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
-    let home = env::var_os("HOME")
-        .or_else(|| env::var_os("USERPROFILE"))
+    let directory = dirs::picture_dir()
         .ok_or_else(|| {
             crate::Error::Io(std::io::Error::new(
                 std::io::ErrorKind::NotFound,
-                "HOME or USERPROFILE environment variable is not set",
+                "Pictures directory is not available",
             ))
-        })?;
-    let directory = PathBuf::from(home).join("Pictures").join("Screenshots");
+        })?
+        .join("Screenshots");
     fs::create_dir_all(&directory)?;
 
     let timestamp = SystemTime::now()

@@ -239,7 +239,7 @@ unsafe fn read_bitmap(dc: HDC, bitmap: HBITMAP, width: i32, height: i32) -> crat
         {
             return Err(crate::Error::WindowsCapture("GetDIBits failed".to_string()));
         }
-        for pixel in data.chunks_exact_mut(4) {
+        for pixel in data.as_chunks_mut::<4>().0 {
             pixel.swap(0, 2);
         }
         Ok(Frame {
