@@ -15,11 +15,13 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "linux", feature = "wayland"))]
+use crate::backend::wayland::WaylandBackend;
+#[cfg(all(target_os = "windows", feature = "windows"))]
 use crate::backend::windows::WindowsBackend;
+#[cfg(all(target_os = "linux", feature = "x11"))]
+use crate::backend::x11::X11Backend;
 use crate::backend::{Backend, BackendTarget};
-#[cfg(target_os = "linux")]
-use crate::backend::{wayland::WaylandBackend, x11::X11Backend};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
@@ -77,26 +79,47 @@ impl Capturer {
     }
 
     fn with_backend(target: BackendTarget) -> crate::Result<Self> {
-        #[cfg(target_os = "linux")]
-        let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
-            Box::new(WaylandBackend::initialize(target)?)
-        } else if env::var_os("DISPLAY").is_some() {
-            Box::new(X11Backend::initialize(target)?)
-        } else {
-            return Err(crate::Error::DisplayUnavailable(
-                "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
-            ));
-        };
+        Ok(Self {
+            backend: Self::create_backend(target)?,
+        })
+    }
 
-        #[cfg(target_os = "windows")]
-        let backend: Box<dyn Backend> = Box::new(WindowsBackend::initialize(target)?);
+    fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
+        #[cfg(all(target_os = "linux", feature = "wayland"))]
+        if env::var_os("WAYLAND_DISPLAY").is_some() {
+            return Ok(Box::new(WaylandBackend::initialize(target)?));
+        }
 
-        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        #[cfg(all(target_os = "linux", feature = "x11"))]
+        if env::var_os("DISPLAY").is_some() {
+            return Ok(Box::new(X11Backend::initialize(target)?));
+        }
+
+        #[cfg(all(target_os = "windows", feature = "windows"))]
+        return Ok(Box::new(WindowsBackend::initialize(target)?));
+
+        #[cfg(all(target_os = "linux", feature = "wayland", feature = "x11"))]
         return Err(crate::Error::DisplayUnavailable(
-            "this operating system is not supported".to_string(),
+            "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
         ));
 
-        Ok(Self { backend })
+        #[cfg(all(target_os = "linux", feature = "wayland", not(feature = "x11")))]
+        return Err(crate::Error::DisplayUnavailable(
+            "WAYLAND_DISPLAY is not set".to_string(),
+        ));
+
+        #[cfg(all(target_os = "linux", not(feature = "wayland"), feature = "x11"))]
+        return Err(crate::Error::DisplayUnavailable(
+            "DISPLAY is not set".to_string(),
+        ));
+
+        #[cfg(not(any(
+            all(target_os = "linux", any(feature = "wayland", feature = "x11")),
+            all(target_os = "windows", feature = "windows")
+        )))]
+        return Err(crate::Error::DisplayUnavailable(
+            "no backend is enabled for this operating system".to_string(),
+        ));
     }
 
     fn capture<F>(&mut self, capture: F) -> crate::Result<()>

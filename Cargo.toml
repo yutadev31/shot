@@ -3,6 +3,12 @@ name = "shot"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = ["wayland", "x11", "windows"]
+wayland = ["dep:wayland-client", "dep:wayland-protocols-wlr"]
+x11 = ["dep:x11rb"]
+windows = ["dep:windows-sys"]
+
 [dependencies]
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
 clap = { version = "4.5.48", features = ["derive"] }
@@ -11,12 +17,12 @@ image = { version = "0.25.10", default-features = false, features = ["png"] }
 memmap2 = "0.9.11"
 tempfile = "3.27.0"
 thiserror = "2.0.21"
-wayland-client = "0.31.15"
-wayland-protocols-wlr = { version = "0.3.12", features = ["client"] }
-x11rb = { version = "0.14.0", features = ["image", "randr"] }
+wayland-client = { version = "0.31.15", optional = true }
+wayland-protocols-wlr = { version = "0.3.12", features = ["client"], optional = true }
+x11rb = { version = "0.14.0", features = ["image", "randr"], optional = true }
 
 [target.'cfg(windows)'.dependencies]
-windows-sys = { version = "0.59.0", features = [
+windows-sys = { version = "0.59.0", optional = true, features = [
     "Win32_Foundation",
     "Win32_Graphics_Gdi",
     "Win32_UI_WindowsAndMessaging",

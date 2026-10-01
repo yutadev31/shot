@@ -1,23 +1,29 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(feature = "wayland")]
     #[error("unsupported Wayland pixel format: {0:?}")]
     UnsupportedWaylandPixelFormat(wayland_client::protocol::wl_shm::Format),
 
+    #[cfg(feature = "wayland")]
     #[error("Wayland screencopy capture failed")]
     WaylandScreencopyFailed,
 
     #[error("failed to read or write data: {0}")]
     Io(#[from] std::io::Error),
 
+    #[cfg(feature = "wayland")]
     #[error("failed to connect to Wayland compositor: {0}")]
     WaylandConnect(#[from] wayland_client::ConnectError),
 
+    #[cfg(feature = "wayland")]
     #[error("failed to dispatch Wayland events: {0}")]
     WaylandDispatch(#[from] wayland_client::DispatchError),
 
+    #[cfg(feature = "wayland")]
     #[error("failed to initialize Wayland globals: {0}")]
     WaylandGlobal(#[from] wayland_client::globals::GlobalError),
 
+    #[cfg(feature = "wayland")]
     #[error("failed to bind Wayland global: {0}")]
     WaylandBind(#[from] wayland_client::globals::BindError),
 

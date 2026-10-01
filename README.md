@@ -25,3 +25,19 @@ shot --all
 ```
 
 使えるオプションは `shot --help` で確認できます。
+
+## バックエンドの選択
+
+バックエンドはCargo featureで選択できます。通常のビルドでは全バックエンドが有効です。
+特定のバックエンドだけを有効にする場合は、デフォルトfeatureを無効にします。
+
+```sh
+# Linux: X11のみ
+cargo build --no-default-features --features x11
+
+# Linux: Waylandのみ
+cargo build --no-default-features --features wayland
+
+# Windows: Win32/GDIのみ
+cargo build --no-default-features --features windows
+```

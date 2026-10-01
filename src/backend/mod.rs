@@ -1,10 +1,10 @@
 use crate::frame::Frame;
 
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "wayland"))]
 pub mod wayland;
-#[cfg(target_os = "windows")]
+#[cfg(all(target_os = "windows", feature = "windows"))]
 pub mod windows;
-#[cfg(target_os = "linux")]
+#[cfg(all(target_os = "linux", feature = "x11"))]
 pub mod x11;
 
 #[derive(Clone, Copy)]
