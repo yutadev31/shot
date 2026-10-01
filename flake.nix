@@ -25,16 +25,25 @@
             "rust-src"
             "rust-analyzer"
           ];
+
+          targets = [
+            "x86_64-pc-windows-gnu"
+          ];
         };
 
         nativeBuildInputs = with pkgs; [
           rust
           taplo
+          nixd
+          nixfmt
+          typos-lsp
           pkg-config
+          pkgsCross.mingwW64.stdenv.cc
         ];
 
         buildInputs = with pkgs; [
           wayland
+          pkgsCross.mingwW64.windows.pthreads
         ];
       in
       {
