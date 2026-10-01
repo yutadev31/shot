@@ -796,6 +796,7 @@ dependencies = [
  "thiserror",
  "wayland-client",
  "wayland-protocols-wlr",
+ "windows-sys 0.59.0",
  "x11rb 0.14.0",
 ]
 

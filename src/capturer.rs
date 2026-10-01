@@ -15,7 +15,11 @@ use image::{
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
-use crate::backend::{Backend, BackendTarget, wayland::WaylandBackend, x11::X11Backend};
+#[cfg(target_os = "windows")]
+use crate::backend::windows::WindowsBackend;
+use crate::backend::{Backend, BackendTarget};
+#[cfg(target_os = "linux")]
+use crate::backend::{wayland::WaylandBackend, x11::X11Backend};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
@@ -73,6 +77,7 @@ impl Capturer {
     }
 
     fn with_backend(target: BackendTarget) -> crate::Result<Self> {
+        #[cfg(target_os = "linux")]
         let backend: Box<dyn Backend> = if env::var_os("WAYLAND_DISPLAY").is_some() {
             Box::new(WaylandBackend::initialize(target)?)
         } else if env::var_os("DISPLAY").is_some() {
@@ -82,6 +87,14 @@ impl Capturer {
                 "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
             ));
         };
+
+        #[cfg(target_os = "windows")]
+        let backend: Box<dyn Backend> = Box::new(WindowsBackend::initialize(target)?);
+
+        #[cfg(not(any(target_os = "linux", target_os = "windows")))]
+        return Err(crate::Error::DisplayUnavailable(
+            "this operating system is not supported".to_string(),
+        ));
 
         Ok(Self { backend })
     }
@@ -116,12 +129,14 @@ fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
 }
 
 fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
-    let home = env::var_os("HOME").ok_or_else(|| {
-        crate::Error::Io(std::io::Error::new(
-            std::io::ErrorKind::NotFound,
-            "HOME environment variable is not set",
-        ))
-    })?;
+    let home = env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .ok_or_else(|| {
+            crate::Error::Io(std::io::Error::new(
+                std::io::ErrorKind::NotFound,
+                "HOME or USERPROFILE environment variable is not set",
+            ))
+        })?;
     let directory = PathBuf::from(home).join("Pictures").join("Screenshots");
     fs::create_dir_all(&directory)?;
 

@@ -56,6 +56,9 @@ pub enum Error {
 
     #[error("X11 image operation failed: {0}")]
     X11Image(String),
+
+    #[error("Windows screen capture failed: {0}")]
+    WindowsCapture(String),
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
