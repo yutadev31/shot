@@ -1,6 +1,11 @@
 version: 2
 
 updates:
+  - package-ecosystem: nix
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
   - package-ecosystem: cargo
     directory: /
     schedule:
@@ -11,7 +16,6 @@ updates:
       rust-dependencies:
         patterns:
           - "*"
-
   - package-ecosystem: github-actions
     directory: /
     schedule:
