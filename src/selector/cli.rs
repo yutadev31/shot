@@ -20,19 +20,20 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
         let mut selected = 0;
 
         loop {
-            execute!(
-                stdout,
-                cursor::RestorePosition,
-                terminal::Clear(ClearType::FromCursorDown)
-            )?;
             for (monitor, name) in names.iter().enumerate() {
-                execute!(stdout, cursor::MoveToColumn(0))?;
+                execute!(
+                    stdout,
+                    cursor::MoveToColumn(0),
+                    terminal::Clear(ClearType::CurrentLine)
+                )?;
+
                 if monitor == selected {
                     writeln!(stdout, "> {name}")?;
                 } else {
                     writeln!(stdout, "  {name}")?;
                 }
             }
+
             stdout.flush()?;
 
             if let Event::Key(key) = event::read()?
@@ -47,8 +48,10 @@ pub(crate) fn select(names: &[String]) -> io::Result<Option<usize>> {
                     }
                     KeyCode::Enter => break Ok(Some(selected)),
                     KeyCode::Esc | KeyCode::Char('q') => break Ok(None),
-                    _ => {}
+                    _ => continue,
                 }
+
+                execute!(stdout, cursor::MoveUp(names.len() as u16))?;
             }
         }
     })();
