@@ -20,6 +20,14 @@ struct Cli {
     #[arg(short = 'r', long, conflicts_with_all = ["monitor", "all"])]
     rofi: bool,
 
+    /// Save the screenshot to this path; may be specified multiple times
+    #[arg(long = "file", value_name = "PATH")]
+    files: Vec<PathBuf>,
+
+    /// Copy the screenshot to the clipboard (use --clipboard false to disable)
+    #[arg(long, value_name = "BOOL", num_args = 0..=1, default_missing_value = "true")]
+    clipboard: Option<bool>,
+
     #[arg(long, hide = true, value_name = "PATH")]
     clipboard_daemon: Option<PathBuf>,
 }
@@ -30,6 +38,11 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serve_clipboard(&path)?;
         return Ok(());
     }
+
+    let config = shot::config::Config::load()?;
+    let files = cli.files;
+    let clipboard = cli.clipboard.unwrap_or(config.output.clipboard);
+    let path_format = config.output.path_format;
 
     let mut capturer = if cli.all {
         Capturer::new_for_all_monitors()?
@@ -57,6 +70,9 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         }
         capturer
     };
+    capturer.set_output_files(files);
+    capturer.set_path_format(path_format);
+    capturer.set_clipboard(clipboard);
     if cli.all {
         capturer.capture_all_outputs()?;
     } else {

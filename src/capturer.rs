@@ -30,6 +30,9 @@ use crate::backend::{Backend, BackendTarget};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
+    output_files: Vec<PathBuf>,
+    path_format: Option<String>,
+    clipboard: bool,
 }
 
 impl Capturer {
@@ -86,7 +89,22 @@ impl Capturer {
     fn with_backend(target: BackendTarget) -> crate::Result<Self> {
         Ok(Self {
             backend: Self::create_backend(target)?,
+            output_files: Vec::new(),
+            path_format: crate::config::OutputConfig::default().path_format,
+            clipboard: true,
         })
+    }
+
+    pub fn set_output_files(&mut self, files: Vec<PathBuf>) {
+        self.output_files = files;
+    }
+
+    pub fn set_path_format(&mut self, path_format: Option<String>) {
+        self.path_format = path_format;
+    }
+
+    pub fn set_clipboard(&mut self, clipboard: bool) {
+        self.clipboard = clipboard;
     }
 
     fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
@@ -152,10 +170,16 @@ impl Capturer {
         let frame = capture(self.backend.as_mut())?;
         let png = encode_png(&frame)?;
 
-        let path = save_to_file(&png)?;
-        copy_to_clipboard(&path)?;
-        println!("Saved screenshot to {}", path.display());
-        println!("Copied screenshot to clipboard");
+        let paths = save_to_files(&png, &self.output_files, self.path_format.as_deref())?;
+        for path in &paths {
+            println!("Saved screenshot to {}", path.display());
+        }
+        if self.clipboard
+            && let Some(path) = paths.first()
+        {
+            copy_to_clipboard(path)?;
+            println!("Copied screenshot to clipboard");
+        }
 
         Ok(())
     }
@@ -174,7 +198,47 @@ fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
     Ok(png.into_inner())
 }
 
-fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
+fn save_to_files(
+    png: &[u8],
+    files: &[PathBuf],
+    path_format: Option<&str>,
+) -> crate::Result<Vec<PathBuf>> {
+    if !files.is_empty() {
+        for path in files {
+            if let Some(parent) = path.parent()
+                && !parent.as_os_str().is_empty()
+            {
+                fs::create_dir_all(parent)?;
+            }
+            fs::write(path, png)?;
+        }
+        return Ok(files.to_vec());
+    }
+
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| {
+            crate::Error::Io(std::io::Error::other(format!(
+                "system clock is before Unix epoch: {error}"
+            )))
+        })?
+        .as_millis();
+    let Some(path_format) = path_format else {
+        return save_to_default_file(png, timestamp);
+    };
+
+    let path = expand_path_format(path_format, timestamp)?;
+    if let Some(parent) = path.parent()
+        && !parent.as_os_str().is_empty()
+    {
+        fs::create_dir_all(parent)?;
+    }
+    fs::write(&path, png)?;
+
+    Ok(vec![path])
+}
+
+fn save_to_default_file(png: &[u8], timestamp: u128) -> crate::Result<Vec<PathBuf>> {
     let directory = dirs::picture_dir()
         .ok_or_else(|| {
             crate::Error::Io(std::io::Error::new(
@@ -185,14 +249,6 @@ fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
         .join("Screenshots");
     fs::create_dir_all(&directory)?;
 
-    let timestamp = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|error| {
-            crate::Error::Io(std::io::Error::other(format!(
-                "system clock is before Unix epoch: {error}"
-            )))
-        })?
-        .as_millis();
     let mut path = directory.join(format!("screenshot-{timestamp}.png"));
     for suffix in 1.. {
         match fs::OpenOptions::new()
@@ -200,9 +256,8 @@ fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
             .create_new(true)
             .open(&path)
         {
-            Ok(file) => {
+            Ok(mut file) => {
                 use std::io::Write;
-                let mut file = file;
                 file.write_all(png)?;
                 break;
             }
@@ -213,7 +268,33 @@ fn save_to_file(png: &[u8]) -> crate::Result<PathBuf> {
         }
     }
 
-    Ok(path)
+    Ok(vec![path])
+}
+
+fn expand_path_format(path_format: &str, timestamp: u128) -> crate::Result<PathBuf> {
+    let mut path = path_format.replace("${timestamp}", &timestamp.to_string());
+    for (placeholder, directory, label) in [
+        ("${pictures_dir}", dirs::picture_dir(), "Pictures"),
+        ("${documents_dir}", dirs::document_dir(), "Documents"),
+        ("${downloads_dir}", dirs::download_dir(), "Downloads"),
+        ("${home_dir}", dirs::home_dir(), "home"),
+    ] {
+        if path.contains(placeholder) {
+            let directory = directory.ok_or_else(|| {
+                crate::Error::Io(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    format!("{label} directory is not available"),
+                ))
+            })?;
+            path = path.replace(placeholder, &directory.to_string_lossy());
+        }
+    }
+
+    if path.contains("${") {
+        return Err(crate::Error::InvalidPathFormat(path_format.to_string()));
+    }
+
+    Ok(PathBuf::from(path))
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

@@ -48,6 +48,24 @@ shot --rofi
 `~/Pictures/Screenshots/screenshot-<timestamp>.png` です。成功すると、保存した
 ファイルのパスとクリップボードへのコピー結果を標準出力に表示します。
 
+## 設定
+
+`~/.config/shot/config.toml` で保存先とクリップボードへのコピーを指定できます。
+
+```toml
+[output]
+path_format = "${pictures_dir}/Screenshots/screenshot-${timestamp}.png"
+clipboard = true
+```
+
+`path_format` を省略または空文字列にすると、既定の
+`Pictures/Screenshots/screenshot-<timestamp>.png` に保存します。空文字列の場合は警告を表示します。
+
+`path_format` では `${pictures_dir}`、`${documents_dir}`、`${downloads_dir}`、
+`${home_dir}`、`${timestamp}` を指定できます。`--file` は複数指定でき、指定した
+場合は `path_format` より優先されます。`--clipboard` は設定ファイルの値を上書き
+します。値を省略すると `true`、無効にする場合は `--clipboard false` を指定します。
+
 詳しいオプションは次で確認できます。
 
 ```sh

@@ -1,5 +1,6 @@
 mod backend;
 mod capturer;
+pub mod config;
 mod error;
 mod frame;
 

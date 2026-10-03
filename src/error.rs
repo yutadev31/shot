@@ -63,6 +63,12 @@ pub enum Error {
     #[error("failed to encode image: {0}")]
     Image(#[from] image::ImageError),
 
+    #[error("failed to parse configuration: {0}")]
+    Config(#[from] toml::de::Error),
+
+    #[error("unsupported path format: {0}")]
+    InvalidPathFormat(String),
+
     #[error("failed to access clipboard")]
     ClipboardFailed,
 
