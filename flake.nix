@@ -27,23 +27,41 @@
           ];
         };
 
-        nativeBuildInputs = with pkgs; [
+        devTools = with pkgs; [
           rust
           taplo
           nixd
           nixfmt
           typos-lsp
+        ];
+
+        nativeBuildInputs = with pkgs; [
           pkg-config
         ];
 
         buildInputs = with pkgs; [
           wayland
         ];
+
+        shot = pkgs.rustPlatform.buildRustPackage {
+          pname = "shot";
+          version = "0.1.0";
+          src = ./.;
+
+          cargoLock.lockFile = ./Cargo.lock;
+
+          inherit nativeBuildInputs buildInputs;
+        };
       in
       {
+        packages = {
+          inherit shot;
+          default = shot;
+        };
+
         devShells.default = pkgs.mkShell {
-          inherit nativeBuildInputs buildInputs;
-          LD_LIBRARY_PATH = pkgs.lib.makeLibraryPath buildInputs;
+          nativeBuildInputs = nativeBuildInputs ++ devTools;
+          inherit buildInputs;
         };
       }
     );
