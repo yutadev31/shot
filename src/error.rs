@@ -72,6 +72,9 @@ pub enum Error {
     #[error("failed to access clipboard")]
     ClipboardFailed,
 
+    #[error("no output destination is configured")]
+    NoOutputDestination,
+
     #[error("display server is unavailable: {0}")]
     DisplayUnavailable(String),
 

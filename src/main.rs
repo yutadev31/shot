@@ -30,6 +30,9 @@ struct Cli {
 
     #[arg(long, hide = true, value_name = "PATH")]
     clipboard_daemon: Option<PathBuf>,
+
+    #[arg(long, hide = true, value_name = "PATH")]
+    clipboard_daemon_temp: Option<PathBuf>,
 }
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
@@ -38,11 +41,20 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         serve_clipboard(&path)?;
         return Ok(());
     }
+    if let Some(path) = cli.clipboard_daemon_temp {
+        let result = serve_clipboard(&path);
+        let _ = std::fs::remove_file(path);
+        result?;
+        return Ok(());
+    }
 
     let config = shot::config::Config::load()?;
     let files = cli.files;
     let clipboard = cli.clipboard.unwrap_or(config.output.clipboard);
     let path_format = config.output.path_format;
+    if files.is_empty() && path_format.is_none() && !clipboard {
+        return Err(Box::new(shot::Error::NoOutputDestination));
+    }
 
     let mut capturer = if cli.all {
         Capturer::new_for_all_monitors()?

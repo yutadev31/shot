@@ -174,10 +174,12 @@ impl Capturer {
         for path in &paths {
             println!("Saved screenshot to {}", path.display());
         }
-        if self.clipboard
-            && let Some(path) = paths.first()
-        {
-            copy_to_clipboard(path)?;
+        if self.clipboard {
+            if paths.is_empty() {
+                copy_png_to_clipboard(&png)?;
+            } else if let Some(path) = paths.first() {
+                copy_to_clipboard(path)?;
+            }
             println!("Copied screenshot to clipboard");
         }
 
@@ -215,6 +217,10 @@ fn save_to_files(
         return Ok(files.to_vec());
     }
 
+    if path_format.is_none() {
+        return Ok(Vec::new());
+    }
+
     let timestamp = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|error| {
@@ -223,50 +229,13 @@ fn save_to_files(
             )))
         })?
         .as_millis();
-    let Some(path_format) = path_format else {
-        return save_to_default_file(png, timestamp);
-    };
-
-    let path = expand_path_format(path_format, timestamp)?;
+    let path = expand_path_format(path_format.unwrap_or_default(), timestamp)?;
     if let Some(parent) = path.parent()
         && !parent.as_os_str().is_empty()
     {
         fs::create_dir_all(parent)?;
     }
     fs::write(&path, png)?;
-
-    Ok(vec![path])
-}
-
-fn save_to_default_file(png: &[u8], timestamp: u128) -> crate::Result<Vec<PathBuf>> {
-    let directory = dirs::picture_dir()
-        .ok_or_else(|| {
-            crate::Error::Io(std::io::Error::new(
-                std::io::ErrorKind::NotFound,
-                "Pictures directory is not available",
-            ))
-        })?
-        .join("Screenshots");
-    fs::create_dir_all(&directory)?;
-
-    let mut path = directory.join(format!("screenshot-{timestamp}.png"));
-    for suffix in 1.. {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&path)
-        {
-            Ok(mut file) => {
-                use std::io::Write;
-                file.write_all(png)?;
-                break;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                path = directory.join(format!("screenshot-{timestamp}-{suffix}.png"));
-            }
-            Err(error) => return Err(error.into()),
-        }
-    }
 
     Ok(vec![path])
 }
@@ -295,6 +264,40 @@ fn expand_path_format(path_format: &str, timestamp: u128) -> crate::Result<PathB
     }
 
     Ok(PathBuf::from(path))
+}
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+fn copy_png_to_clipboard(png: &[u8]) -> crate::Result<()> {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| crate::Error::Io(std::io::Error::other(error)))?
+        .as_nanos();
+    let path = env::temp_dir().join(format!(
+        "shot-clipboard-{}-{timestamp}.png",
+        std::process::id()
+    ));
+    fs::write(&path, png)?;
+
+    let executable = env::current_exe()?;
+    if let Err(error) = Command::new(executable)
+        .arg("--clipboard-daemon-temp")
+        .arg(&path)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .current_dir("/")
+        .spawn()
+    {
+        let _ = fs::remove_file(&path);
+        return Err(error.into());
+    }
+
+    Ok(())
+}
+
+#[cfg(any(target_os = "windows", target_os = "macos"))]
+fn copy_png_to_clipboard(png: &[u8]) -> crate::Result<()> {
+    set_clipboard_image(png)
 }
 
 #[cfg(not(any(target_os = "windows", target_os = "macos")))]

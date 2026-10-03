@@ -58,8 +58,9 @@ path_format = "${pictures_dir}/Screenshots/screenshot-${timestamp}.png"
 clipboard = true
 ```
 
-`path_format` を省略または空文字列にすると、既定の
-`Pictures/Screenshots/screenshot-<timestamp>.png` に保存します。空文字列の場合は警告を表示します。
+`path_format` を省略するとファイルには保存せず、クリップボードのみに出力します。
+空文字列の場合も警告を表示して同じ動作になります。`path_format` と `--file` の両方が
+なく、`clipboard = false` の場合は、キャプチャやモニター選択を開始する前にエラーになります。
 
 `path_format` では `${pictures_dir}`、`${documents_dir}`、`${downloads_dir}`、
 `${home_dir}`、`${timestamp}` を指定できます。`--file` は複数指定でき、指定した
