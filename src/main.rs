@@ -35,7 +35,14 @@ struct Cli {
     clipboard_daemon_temp: Option<PathBuf>,
 }
 
-fn main() -> Result<(), Box<dyn std::error::Error>> {
+fn main() {
+    if let Err(error) = run() {
+        eprintln!("Error: {error}");
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
     if let Some(path) = cli.clipboard_daemon {
         serve_clipboard(&path)?;
