@@ -1,22 +1,22 @@
 # shot
 
-`shot` は、指定したモニターまたは接続中の全モニターをキャプチャする
-クロスプラットフォームの Rust 製 CLI ツールです。キャプチャ結果は PNG として
-`Pictures/Screenshots` に保存し、同時にシステムクリップボードへコピーします。
+`shot` is a cross-platform Rust CLI tool that captures a selected monitor or all
+connected monitors. Captures are saved as PNG files under
+`Pictures/Screenshots` and copied to the system clipboard.
 
-Linux では Wayland（`wlr-screencopy`）と X11（RandR / XGetImage）、Windows では
-Win32/GDI を使用します。複数モニターを `--all` で撮影すると、モニターの配置を
-反映して 1 枚の画像に連結します。
+On Linux, it uses Wayland (`wlr-screencopy`) or X11 (RandR / XGetImage). On
+Windows, it uses Win32/GDI. When multiple monitors are captured with `--all`,
+they are stitched into a single image while preserving their layout.
 
 ## Installation
 
-Cargo でローカルチェックアウトからインストールできます。
+Install from a local checkout with Cargo:
 
 ```sh
 cargo install --path .
 ```
 
-Nix を使う場合は、開発環境に入れます。
+With Nix, enter the development environment:
 
 ```sh
 nix develop
@@ -24,33 +24,35 @@ nix develop
 
 ## Usage
 
-引数なしで実行すると、モニターが複数ある場合は端末上で選択できます。上下キー
-または `h` / `j` / `k` / `l` で移動し、Enter で撮影、Esc または `q` でキャンセルします。
+When run without arguments, `shot` lets you select a monitor in the terminal if
+multiple monitors are available. Navigate with the arrow keys or
+`h` / `j` / `k` / `l`, press Enter to capture, or press Esc or `q` to cancel.
 
 ```sh
-# モニターを選択して撮影
+# Select a monitor and capture it
 shot
 
-# 0 始まりの番号で指定
+# Select by zero-based index
 shot --monitor 1
 
-# Wayland の出力名や X11/Windows のモニター名で指定
+# Select by Wayland output name or X11/Windows monitor name
 shot --monitor HDMI-A-1
 
-# 全モニターを 1 枚に連結
+# Stitch all monitors into one image
 shot --all
 
-# rofi でモニターを選択
+# Select a monitor with rofi
 shot --rofi
 ```
 
-`--monitor` は番号と名前のどちらも受け付けます。保存先は通常
-`~/Pictures/Screenshots/screenshot-<timestamp>.png` です。成功すると、保存した
-ファイルのパスとクリップボードへのコピー結果を標準出力に表示します。
+`--monitor` accepts either an index or a name. By default, captures are saved to
+`~/Pictures/Screenshots/screenshot-<timestamp>.png`. On success, `shot` prints
+the output path and clipboard result to standard output.
 
-## 設定
+## Configuration
 
-`~/.config/shot/config.toml` で保存先とクリップボードへのコピーを指定できます。
+Configure the output path and clipboard behavior in
+`~/.config/shot/config.toml`:
 
 ```toml
 [output]
@@ -58,16 +60,18 @@ path_format = "${pictures_dir}/Screenshots/screenshot-${timestamp}.png"
 clipboard = true
 ```
 
-`path_format` を省略するとファイルには保存せず、クリップボードのみに出力します。
-空文字列の場合も警告を表示して同じ動作になります。`path_format` と `--file` の両方が
-なく、`clipboard = false` の場合は、キャプチャやモニター選択を開始する前にエラーになります。
+If `path_format` is omitted, the capture is not saved to a file and is sent only
+to the clipboard. An empty value has the same effect, with a warning. If both
+`path_format` and `--file` are absent and `clipboard = false`, `shot` reports an
+error before starting capture or monitor selection.
 
-`path_format` では `${pictures_dir}`、`${documents_dir}`、`${downloads_dir}`、
-`${home_dir}`、`${timestamp}` を指定できます。`--file` は複数指定でき、指定した
-場合は `path_format` より優先されます。`--clipboard` は設定ファイルの値を上書き
-します。値を省略すると `true`、無効にする場合は `--clipboard false` を指定します。
+`path_format` supports `${pictures_dir}`, `${documents_dir}`,
+`${downloads_dir}`, `${home_dir}`, and `${timestamp}`. You can specify
+`--file` multiple times; when present, it takes precedence over `path_format`.
+`--clipboard` overrides the configuration file. Its value defaults to `true`;
+to disable clipboard copying, use `--clipboard false`.
 
-詳しいオプションは次で確認できます。
+For a full list of options:
 
 ```sh
 shot --help
@@ -75,34 +79,34 @@ shot --help
 
 ## Platform requirements
 
-Linux では、`WAYLAND_DISPLAY` が設定されていれば Wayland、そうでなければ
-`DISPLAY` が設定された X11 を使用します。
+On Linux, `shot` uses Wayland when `WAYLAND_DISPLAY` is set; otherwise, it
+uses X11 when `DISPLAY` is set.
 
-- Wayland: `wlr-screencopy` 対応コンポジターと、クリップボード用の
-  `wayland-data-control` 対応環境が必要です。
-- X11: 動作中の X サーバーと `DISPLAY` が必要です。
-- Windows: 追加の表示サーバー設定は不要です。
-- `--rofi`: モニター選択時に `rofi` コマンドが必要です。
+- Wayland: Requires a compositor supporting `wlr-screencopy` and a
+  `wayland-data-control` environment for clipboard access.
+- X11: Requires a running X server and `DISPLAY`.
+- Windows: No additional display server configuration is required.
+- `--rofi`: Requires the `rofi` command for monitor selection.
 
 ## Backend features
 
-通常のビルドでは Wayland、X11、Windows の feature がすべて有効です。特定の
-バックエンドだけを有効にする場合は、デフォルト feature を無効にします。
+The default build enables the Wayland, X11, and Windows features. To enable
+only a specific backend, disable the default features:
 
 ```sh
-# Linux: X11 のみ
+# Linux: X11 only
 cargo build --no-default-features --features x11
 
-# Linux: Wayland のみ
+# Linux: Wayland only
 cargo build --no-default-features --features wayland
 
-# Windows: Win32/GDI のみ
+# Windows: Win32/GDI only
 cargo build --no-default-features --features windows
 ```
 
 ## Development
 
-変更後は次のチェックを実行してください。
+Run the following checks after making changes:
 
 ```sh
 cargo fmt --check
@@ -111,8 +115,8 @@ cargo test
 cargo clippy --all-targets --all-features -- -D warnings
 ```
 
-バックエンド、クリップボード、PNG 出力の変更は、利用可能なグラフィカル環境で
-実際に `shot` を実行して確認します。
+Changes to the backends, clipboard, or PNG output should be verified by running
+`shot` in an available graphical environment.
 
 ## License
 
