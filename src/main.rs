@@ -13,8 +13,12 @@ struct Cli {
     monitor: Option<String>,
 
     /// Capture and stitch all monitors into one image
-    #[arg(short = 'a', long)]
+    #[arg(short = 'a', long, conflicts_with = "region")]
     all: bool,
+
+    /// Capture a rectangle on the selected monitor: X,Y,WIDTH,HEIGHT (pixels)
+    #[arg(long, value_name = "X,Y,WIDTH,HEIGHT", value_parser = parse_region, conflicts_with = "all")]
+    region: Option<(u32, u32, u32, u32)>,
 
     /// Select a monitor using rofi
     #[arg(short = 'r', long, conflicts_with_all = ["monitor", "all"])]
@@ -92,10 +96,28 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     capturer.set_output_files(files);
     capturer.set_path_format(path_format);
     capturer.set_clipboard(clipboard);
+    if let Some(region) = cli.region {
+        capturer.set_region(region)?;
+    }
     if cli.all {
         capturer.capture_all_outputs()?;
     } else {
         capturer.capture_output()?;
     }
     Ok(())
+}
+
+fn parse_region(value: &str) -> Result<(u32, u32, u32, u32), String> {
+    let values = value
+        .split(',')
+        .map(str::parse::<u32>)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| "expected four non-negative integers: X,Y,WIDTH,HEIGHT".to_string())?;
+    let [x, y, width, height] = values.as_slice() else {
+        return Err("expected four values: X,Y,WIDTH,HEIGHT".to_string());
+    };
+    if *width == 0 || *height == 0 {
+        return Err("WIDTH and HEIGHT must be greater than zero".to_string());
+    }
+    Ok((*x, *y, *width, *height))
 }

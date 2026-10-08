@@ -33,6 +33,7 @@ pub struct Capturer {
     output_files: Vec<PathBuf>,
     path_format: Option<String>,
     clipboard: bool,
+    region: Option<(u32, u32, u32, u32)>,
 }
 
 impl Capturer {
@@ -92,6 +93,7 @@ impl Capturer {
             output_files: Vec::new(),
             path_format: crate::config::OutputConfig::default().path_format,
             clipboard: true,
+            region: None,
         })
     }
 
@@ -105,6 +107,15 @@ impl Capturer {
 
     pub fn set_clipboard(&mut self, clipboard: bool) {
         self.clipboard = clipboard;
+    }
+
+    /// Restrict the saved image to `(x, y, width, height)` pixels within the selected monitor.
+    pub fn set_region(&mut self, region: (u32, u32, u32, u32)) -> crate::Result<()> {
+        if region.2 == 0 || region.3 == 0 {
+            return Err(crate::Error::InvalidRegion);
+        }
+        self.region = Some(region);
+        Ok(())
     }
 
     fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
@@ -167,7 +178,10 @@ impl Capturer {
     where
         F: FnOnce(&mut dyn Backend) -> crate::Result<crate::frame::Frame>,
     {
-        let frame = capture(self.backend.as_mut())?;
+        let mut frame = capture(self.backend.as_mut())?;
+        if let Some((x, y, width, height)) = self.region {
+            frame = crop_frame(frame, x, y, width, height)?;
+        }
         let png = encode_png(&frame)?;
 
         let paths = save_to_files(&png, &self.output_files, self.path_format.as_deref())?;
@@ -185,6 +199,49 @@ impl Capturer {
 
         Ok(())
     }
+}
+
+fn crop_frame(
+    frame: crate::frame::Frame,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> crate::Result<crate::frame::Frame> {
+    if width == 0
+        || height == 0
+        || x.checked_add(width).is_none_or(|right| right > frame.width)
+        || y.checked_add(height)
+            .is_none_or(|bottom| bottom > frame.height)
+    {
+        return Err(crate::Error::InvalidRegion);
+    }
+    let source_stride = (frame.width as usize)
+        .checked_mul(4)
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+    let output_stride = (width as usize)
+        .checked_mul(4)
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+    let capacity = output_stride
+        .checked_mul(height as usize)
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+    if frame.data.len()
+        != source_stride
+            .checked_mul(frame.height as usize)
+            .ok_or(crate::Error::InvalidImageBuffer)?
+    {
+        return Err(crate::Error::InvalidImageBuffer);
+    }
+    let mut data = Vec::with_capacity(capacity);
+    for row in y..y + height {
+        let start = row as usize * source_stride + x as usize * 4;
+        data.extend_from_slice(&frame.data[start..start + output_stride]);
+    }
+    Ok(crate::frame::Frame {
+        data,
+        width,
+        height,
+    })
 }
 
 fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {

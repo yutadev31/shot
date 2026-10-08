@@ -60,6 +60,9 @@ pub enum Error {
     #[error("invalid image buffer")]
     InvalidImageBuffer,
 
+    #[error("capture region is outside the selected monitor or has invalid dimensions")]
+    InvalidRegion,
+
     #[error("failed to encode image: {0}")]
     Image(#[from] image::ImageError),
 
