@@ -23,7 +23,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
         if let Ok(index) = monitor.parse::<usize>() {
             Capturer::new_for_monitor(index)?
         } else {
-            Capturer::new_for_monitor_name(&monitor)?
+            Capturer::new_for_monitor_name(monitor)?
         }
     } else {
         Capturer::new_for_all_monitors()?
