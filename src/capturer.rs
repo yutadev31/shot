@@ -131,9 +131,9 @@ impl Capturer {
             return Ok(Box::new(X11Backend::initialize(target)?));
         }
 
-        return Err(crate::Error::DisplayUnavailable(
+        Err(crate::Error::DisplayUnavailable(
             "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
-        ));
+        ))
     }
 
     fn capture<F>(&mut self, capture: F) -> crate::Result<()>
