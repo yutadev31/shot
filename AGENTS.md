@@ -29,5 +29,10 @@ cargo test --workspace --locked
 
 ## Git
 
-- Do not run Git commands that modify the repository state unless explicitly instructed to do so.
-- At the end of the task, provide an English commit message in the chat following the Conventional Commits specification.
+- Never modify the `main` branch, directly or indirectly, unless explicitly instructed to do so.
+- Git operations that modify repository state are allowed on other branches.
+- After completing a task, run relevant tests and linters, review the diff, and automatically commit the changes.
+- Commit only changes made for the current task. Do not include unrelated pre-existing changes.
+- Use English commit messages following the Conventional Commits specification.
+- Never push commits or tags to remote repositories unless explicitly instructed to do so.
+- Do not amend, rebase, reset, or otherwise rewrite existing commits unless explicitly instructed to do so.
