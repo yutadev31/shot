@@ -8,27 +8,31 @@ use image::{
 
 use crate::backend::wayland::WaylandBackend;
 use crate::backend::x11::X11Backend;
-use crate::backend::{Backend, BackendTarget};
+use crate::backend::{Backend, BackendTarget, Frame};
 
-pub struct Capturer {
+/// Captures monitor images to standard output as PNG without explicit initialization.
+///
+/// ```no_run
+/// use shot::capturer::Capturer;
+///
+/// Capturer::capture_output(0)?;
+/// Capturer::capture_output_by_name("HDMI-A-1")?;
+/// Capturer::capture_all_outputs()?;
+/// # Ok::<(), Box<dyn std::error::Error>>(())
+/// ```
+pub struct Capturer;
+
+struct CaptureSession {
     backend: Box<dyn Backend>,
     region: Option<(u32, u32, u32, u32)>,
 }
 
-impl Capturer {
-    /// Creates a capturer for the first monitor.
-    ///
-    /// # Errors
-    /// Returns an error if the display backend cannot connect or no monitor is available.
-    pub fn new() -> crate::Result<Self> {
-        Self::new_for_monitor(0)
-    }
-
+impl CaptureSession {
     /// Creates a capturer for the zero-based monitor index.
     ///
     /// # Errors
     /// Returns an error if backend initialization fails or the index is out of range.
-    pub fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
+    fn new_for_monitor(monitor_index: usize) -> crate::Result<Self> {
         Self::with_backend(BackendTarget::Monitor(monitor_index))
     }
 
@@ -36,9 +40,9 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if backend initialization fails or the named monitor is absent.
-    pub fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
+    fn new_for_monitor_name(name: &str) -> crate::Result<Self> {
         let mut capturer = Self::new_for_monitor_selection()?;
-        let names = capturer.monitor_names();
+        let names = capturer.backend.monitor_names();
         let monitor_index = names
             .iter()
             .position(|monitor_name| monitor_name == name)
@@ -54,27 +58,15 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if the display backend cannot initialize or has no monitors.
-    pub fn new_for_monitor_selection() -> crate::Result<Self> {
+    fn new_for_monitor_selection() -> crate::Result<Self> {
         Self::with_backend(BackendTarget::All)
-    }
-
-    /// Returns the number of monitors advertised by the backend.
-    #[must_use]
-    pub fn monitor_count(&self) -> usize {
-        self.backend.monitor_count()
-    }
-
-    /// Returns monitor names in the same order as their indices.
-    #[must_use]
-    pub fn monitor_names(&self) -> Vec<String> {
-        self.backend.monitor_names()
     }
 
     /// Selects a monitor by its zero-based index.
     ///
     /// # Errors
     /// Returns an error if the index is out of range.
-    pub fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
+    fn select_monitor(&mut self, monitor_index: usize) -> crate::Result<()> {
         self.backend.select_monitor(monitor_index)
     }
 
@@ -82,7 +74,7 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if the display backend cannot initialize or has no monitors.
-    pub fn new_for_all_monitors() -> crate::Result<Self> {
+    fn new_for_all_monitors() -> crate::Result<Self> {
         Self::with_backend(BackendTarget::All)
     }
 
@@ -90,7 +82,7 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if capture, cropping, encoding, saving, or clipboard access fails.
-    pub fn capture_output(&mut self) -> crate::Result<()> {
+    fn capture_output(&mut self) -> crate::Result<()> {
         self.capture(|backend| backend.capture_output())
     }
 
@@ -98,7 +90,7 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if capture, stitching, cropping, encoding, saving, or clipboard access fails.
-    pub fn capture_all_outputs(&mut self) -> crate::Result<()> {
+    fn capture_all_outputs(&mut self) -> crate::Result<()> {
         self.capture(|backend| backend.capture_all_outputs())
     }
 
@@ -113,7 +105,7 @@ impl Capturer {
     ///
     /// # Errors
     /// Returns an error if width or height is zero. Bounds are checked during capture.
-    pub fn set_region(&mut self, region: (u32, u32, u32, u32)) -> crate::Result<()> {
+    fn set_region(&mut self, region: (u32, u32, u32, u32)) -> crate::Result<()> {
         if region.2 == 0 || region.3 == 0 {
             return Err(crate::Error::InvalidRegion);
         }
@@ -138,7 +130,7 @@ impl Capturer {
 
     fn capture<F>(&mut self, capture: F) -> crate::Result<()>
     where
-        F: FnOnce(&mut dyn Backend) -> crate::Result<crate::frame::Frame>,
+        F: FnOnce(&mut dyn Backend) -> crate::Result<Frame>,
     {
         if io::stdout().is_terminal() {
             return Err(crate::Error::StdoutIsTerminal);
@@ -159,13 +151,7 @@ impl Capturer {
     }
 }
 
-fn crop_frame(
-    frame: &crate::frame::Frame,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> crate::Result<crate::frame::Frame> {
+fn crop_frame(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> crate::Result<Frame> {
     if width == 0
         || height == 0
         || x.checked_add(width).is_none_or(|right| right > frame.width)
@@ -200,14 +186,14 @@ fn crop_frame(
         data.extend_from_slice(&frame.data[start..start + output_stride]);
     }
 
-    Ok(crate::frame::Frame {
+    Ok(Frame {
         data,
         width,
         height,
     })
 }
 
-fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
+fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
     let mut png = Cursor::new(Vec::new());
 
     PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Sub).write_image(
@@ -218,4 +204,56 @@ fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
     )?;
 
     Ok(png.into_inner())
+}
+
+impl Capturer {
+    /// Captures the zero-based monitor index to standard output as PNG.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, encoding, or writing fails.
+    pub fn capture_output(monitor_index: usize) -> crate::Result<()> {
+        CaptureSession::new_for_monitor(monitor_index)?.capture_output()
+    }
+
+    /// Captures an exact monitor name to standard output as PNG.
+    ///
+    /// # Errors
+    /// Returns an error if the monitor is absent or capture fails.
+    pub fn capture_output_by_name(name: &str) -> crate::Result<()> {
+        CaptureSession::new_for_monitor_name(name)?.capture_output()
+    }
+
+    /// Captures all outputs as one PNG image to standard output.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, stitching, encoding, or writing fails.
+    pub fn capture_all_outputs() -> crate::Result<()> {
+        CaptureSession::new_for_all_monitors()?.capture_all_outputs()
+    }
+
+    /// Captures a region `(x, y, width, height)` within the selected monitor.
+    ///
+    /// # Errors
+    /// Returns an error if the region is invalid or capture fails.
+    pub fn capture_region(monitor_index: usize, region: (u32, u32, u32, u32)) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_monitor(monitor_index)?;
+        session.set_region(region)?;
+        session.capture_output()
+    }
+
+    /// Returns the number of monitors advertised by the backend.
+    ///
+    /// # Errors
+    /// Returns an error if backend initialization fails.
+    pub fn monitor_count() -> crate::Result<usize> {
+        Ok(CaptureSession::create_backend(BackendTarget::All)?.monitor_count())
+    }
+
+    /// Returns monitor names in the same order as their indices.
+    ///
+    /// # Errors
+    /// Returns an error if backend initialization fails.
+    pub fn monitor_names() -> crate::Result<Vec<String>> {
+        Ok(CaptureSession::create_backend(BackendTarget::All)?.monitor_names())
+    }
 }

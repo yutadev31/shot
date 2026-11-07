@@ -8,10 +8,7 @@ use x11rb::{
     rust_connection::RustConnection,
 };
 
-use crate::{
-    backend::{Backend, BackendTarget, PositionedFrame, stitch_positioned},
-    frame::Frame,
-};
+use crate::backend::{Backend, BackendTarget, Frame, PositionedFrame, stitch_positioned};
 
 pub struct X11Backend {
     connection: RustConnection,
