@@ -19,20 +19,14 @@ fn main() {
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
-    let mut captureer = if let Some(monitor) = &cli.monitor {
+    if let Some(monitor) = &cli.monitor {
         if let Ok(index) = monitor.parse::<usize>() {
-            Capturer::new_for_monitor(index)?
+            Capturer::capture_output(index)?;
         } else {
-            Capturer::new_for_monitor_name(monitor)?
+            Capturer::capture_output_by_name(monitor)?;
         }
     } else {
-        Capturer::new_for_all_monitors()?
-    };
-
-    if cli.monitor.is_some() {
-        captureer.capture_output()?;
-    } else {
-        captureer.capture_all_outputs()?;
+        Capturer::capture_all_outputs()?;
     }
 
     Ok(())
