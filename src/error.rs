@@ -1,25 +1,39 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[cfg(target_os = "linux")]
     #[error("unsupported Wayland pixel format: {0:?}")]
     UnsupportedWaylandPixelFormat(wayland_client::protocol::wl_shm::Format),
 
+    #[cfg(target_os = "linux")]
     #[error("Wayland screencopy capture failed")]
     WaylandScreencopyFailed,
 
     #[error("failed to read or write data: {0}")]
     Io(#[from] std::io::Error),
 
+    #[cfg(target_os = "linux")]
     #[error("failed to connect to Wayland compositor: {0}")]
     WaylandConnect(#[from] wayland_client::ConnectError),
 
+    #[cfg(target_os = "linux")]
     #[error("failed to dispatch Wayland events: {0}")]
     WaylandDispatch(#[from] wayland_client::DispatchError),
 
+    #[cfg(target_os = "linux")]
     #[error("failed to initialize Wayland globals: {0}")]
     WaylandGlobal(#[from] wayland_client::globals::GlobalError),
 
+    #[cfg(target_os = "linux")]
     #[error("failed to bind Wayland global: {0}")]
     WaylandBind(#[from] wayland_client::globals::BindError),
+
+    #[cfg(windows)]
+    #[error("Windows {operation} failed: {source}")]
+    Windows {
+        operation: &'static str,
+        #[source]
+        source: std::io::Error,
+    },
 
     #[error("monitor index {index} is out of range (found {count} monitor(s))")]
     MonitorOutOfRange { index: usize, count: usize },

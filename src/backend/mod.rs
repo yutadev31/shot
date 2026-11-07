@@ -1,4 +1,8 @@
+#[cfg(target_os = "linux")]
 pub mod wayland;
+#[cfg(windows)]
+pub mod windows;
+#[cfg(target_os = "linux")]
 pub mod x11;
 
 #[derive(Debug)]
