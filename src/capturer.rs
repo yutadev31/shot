@@ -1,12 +1,17 @@
+use std::io;
 use std::io::{Cursor, IsTerminal, Write};
-use std::{env, io};
+
+#[cfg(target_os = "linux")]
+use std::env;
 
 use image::{
     ExtendedColorType, ImageEncoder,
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
+#[cfg(target_os = "linux")]
 use crate::backend::wayland::WaylandBackend;
+#[cfg(target_os = "linux")]
 use crate::backend::x11::X11Backend;
 use crate::backend::{Backend, BackendTarget, Frame};
 
@@ -114,6 +119,7 @@ impl CaptureSession {
         Ok(())
     }
 
+    #[cfg(target_os = "linux")]
     fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
         if env::var_os("WAYLAND_DISPLAY").is_some() {
             return Ok(Box::new(WaylandBackend::initialize(target)?));
@@ -125,6 +131,20 @@ impl CaptureSession {
 
         Err(crate::Error::DisplayUnavailable(
             "neither WAYLAND_DISPLAY nor DISPLAY is set".to_string(),
+        ))
+    }
+
+    #[cfg(windows)]
+    fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
+        Ok(Box::new(
+            crate::backend::windows::WindowsBackend::initialize(target)?,
+        ))
+    }
+
+    #[cfg(not(any(target_os = "linux", windows)))]
+    fn create_backend(_target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
+        Err(crate::Error::DisplayUnavailable(
+            "unsupported operating system".to_string(),
         ))
     }
 
