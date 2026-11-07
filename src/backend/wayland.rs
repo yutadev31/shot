@@ -5,6 +5,15 @@ use wayland_client::{
     globals::{GlobalListContents, registry_queue_init},
     protocol::{wl_buffer, wl_output, wl_registry, wl_shm, wl_shm_pool},
 };
+use wayland_protocols::ext::{
+    image_capture_source::v1::client::{
+        ext_image_capture_source_v1, ext_output_image_capture_source_manager_v1,
+    },
+    image_copy_capture::v1::client::{
+        ext_image_copy_capture_frame_v1, ext_image_copy_capture_manager_v1,
+        ext_image_copy_capture_session_v1,
+    },
+};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
@@ -19,7 +28,7 @@ pub struct WaylandBackend {
     outputs: Vec<Output>,
     names: Vec<String>,
     selected_monitor: Option<usize>,
-    manager: zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1,
+    manager: CaptureManager,
 }
 
 impl Backend for WaylandBackend {
@@ -125,15 +134,26 @@ impl WaylandBackend {
             })
             .collect();
 
-        let manager = globals.bind::<zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1, _, _>(
-            &qh,
-            1..=3,
-            (),
-        )?;
+        let has_ext = globals.contents().with_list(|globals| {
+            [
+                "ext_image_copy_capture_manager_v1",
+                "ext_output_image_capture_source_manager_v1",
+            ]
+            .iter()
+            .all(|interface| globals.iter().any(|global| global.interface == *interface))
+        });
+        let manager = if has_ext {
+            CaptureManager::Ext {
+                capture: globals.bind(&qh, 1..=1, ())?,
+                source: globals.bind(&qh, 1..=1, ())?,
+            }
+        } else {
+            CaptureManager::Wlr(globals.bind(&qh, 1..=3, ())?)
+        };
 
         let mut state = State::default();
 
-        event_queue.blocking_dispatch(&mut state)?;
+        event_queue.roundtrip(&mut state)?;
 
         let names = selected_globals
             .iter()
@@ -162,9 +182,27 @@ impl WaylandBackend {
 
         self.state.reset();
 
-        let frame = self.manager.capture_output(0, output, &qh, ());
+        let capture = match &self.manager {
+            CaptureManager::Ext { capture, source } => {
+                let source = source.create_source(output, &qh, ());
+                let session = capture.create_session(
+                    &source,
+                    ext_image_copy_capture_manager_v1::Options::empty(),
+                    &qh,
+                    (),
+                );
+                source.destroy();
+                ActiveCapture::Ext {
+                    frame: session.create_frame(&qh, ()),
+                    session,
+                }
+            }
+            CaptureManager::Wlr(manager) => {
+                ActiveCapture::Wlr(manager.capture_output(0, output, &qh, ()))
+            }
+        };
 
-        while self.state.buffer_info.is_none() && !self.state.failed {
+        while !self.state.constraints_done && !self.state.failed {
             self.event_queue.blocking_dispatch(&mut self.state)?;
         }
 
@@ -212,11 +250,22 @@ impl WaylandBackend {
             (),
         );
 
-        frame.copy(&buffer);
+        match &capture {
+            ActiveCapture::Ext { frame, .. } => {
+                frame.attach_buffer(&buffer);
+                frame.damage_buffer(0, 0, info.width as i32, info.height as i32);
+                frame.capture();
+            }
+            ActiveCapture::Wlr(frame) => frame.copy(&buffer),
+        }
+
+        pool.destroy();
 
         while !self.state.ready && !self.state.failed {
             self.event_queue.blocking_dispatch(&mut self.state)?;
         }
+
+        buffer.destroy();
 
         if self.state.failed {
             return Err(crate::Error::WaylandScreencopyFailed);
@@ -224,11 +273,14 @@ impl WaylandBackend {
 
         let data = convert_to_rgba(&mmap, info.width, info.height, info.stride, info.format)?;
 
-        Ok(Frame {
-            data,
-            width: info.width,
-            height: info.height,
-        })
+        transform_frame(
+            Frame {
+                data,
+                width: info.width,
+                height: info.height,
+            },
+            self.state.transform,
+        )
     }
 }
 
@@ -237,6 +289,10 @@ struct State {
     output_names: HashMap<u32, String>,
     output_layouts: HashMap<u32, OutputLayout>,
     buffer_info: Option<BufferInfo>,
+    constraints_done: bool,
+    ext_size: Option<(u32, u32)>,
+    ext_format: Option<wl_shm::Format>,
+    transform: Option<wl_output::Transform>,
     ready: bool,
     failed: bool,
     unsupported_format: Option<wl_shm::Format>,
@@ -245,6 +301,10 @@ struct State {
 impl State {
     fn reset(&mut self) {
         self.buffer_info = None;
+        self.constraints_done = false;
+        self.ext_size = None;
+        self.ext_format = None;
+        self.transform = None;
         self.ready = false;
         self.failed = false;
         self.unsupported_format = None;
@@ -304,6 +364,7 @@ impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for State {
                 stride,
             } => {
                 if matches!(format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888) {
+                    state.constraints_done = true;
                     state.buffer_info = Some(BufferInfo {
                         format,
                         width,
@@ -412,4 +473,185 @@ fn convert_to_rgba(
     }
 
     Ok(output)
+}
+
+enum CaptureManager {
+    Ext {
+        capture: ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1,
+        source: ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1,
+    },
+    Wlr(zwlr_screencopy_manager_v1::ZwlrScreencopyManagerV1),
+}
+
+enum ActiveCapture {
+    Ext {
+        frame: ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+        session: ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+    },
+    Wlr(zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1),
+}
+
+impl Drop for ActiveCapture {
+    fn drop(&mut self) {
+        match self {
+            Self::Ext { frame, session } => {
+                frame.destroy();
+                session.destroy();
+            }
+            Self::Wlr(frame) => frame.destroy(),
+        }
+    }
+}
+
+impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _session: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
+        event: ext_image_copy_capture_session_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use ext_image_copy_capture_session_v1::Event;
+        match event {
+            Event::BufferSize { width, height } => state.ext_size = Some((width, height)),
+            Event::ShmFormat {
+                format: WEnum::Value(format),
+            } => {
+                if matches!(format, wl_shm::Format::Argb8888 | wl_shm::Format::Xrgb8888) {
+                    state.ext_format = Some(format);
+                } else {
+                    state.unsupported_format = Some(format);
+                }
+            }
+            Event::Done => {
+                state.constraints_done = true;
+                if let (Some((width, height)), Some(format)) = (state.ext_size, state.ext_format)
+                    && width > 0
+                    && height > 0
+                    && let Some(stride) = width.checked_mul(4)
+                {
+                    state.unsupported_format = None;
+                    state.buffer_info = Some(BufferInfo {
+                        format,
+                        width,
+                        height,
+                        stride,
+                    });
+                } else {
+                    state.failed = true;
+                }
+            }
+            Event::Stopped => state.failed = true,
+            _ => {}
+        }
+    }
+}
+
+impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, ()> for State {
+    fn event(
+        state: &mut Self,
+        _frame: &ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
+        event: ext_image_copy_capture_frame_v1::Event,
+        _data: &(),
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        use ext_image_copy_capture_frame_v1::Event;
+        match event {
+            Event::Transform {
+                transform: WEnum::Value(transform),
+            } => state.transform = Some(transform),
+            Event::Transform { .. } | Event::Failed { .. } => state.failed = true,
+            Event::Ready => state.ready = true,
+            _ => {}
+        }
+    }
+}
+
+wayland_client::delegate_noop!(State: ignore ext_image_capture_source_v1::ExtImageCaptureSourceV1);
+wayland_client::delegate_noop!(State: ignore ext_output_image_capture_source_manager_v1::ExtOutputImageCaptureSourceManagerV1);
+wayland_client::delegate_noop!(State: ignore ext_image_copy_capture_manager_v1::ExtImageCopyCaptureManagerV1);
+
+fn transform_frame(frame: Frame, transform: Option<wl_output::Transform>) -> crate::Result<Frame> {
+    use image::imageops;
+    use wl_output::Transform;
+
+    let transform = transform.unwrap_or(Transform::Normal);
+    if transform == Transform::Normal {
+        return Ok(frame);
+    }
+
+    let image = image::RgbaImage::from_raw(frame.width, frame.height, frame.data)
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+    // Undo the transform already applied by the compositor to the buffer.
+    let image = match transform {
+        Transform::_90 => imageops::rotate90(&image),
+        Transform::_180 => imageops::rotate180(&image),
+        Transform::_270 => imageops::rotate270(&image),
+        Transform::Flipped => imageops::flip_horizontal(&image),
+        Transform::Flipped90 => imageops::rotate270(&imageops::flip_horizontal(&image)),
+        Transform::Flipped180 => imageops::rotate180(&imageops::flip_horizontal(&image)),
+        Transform::Flipped270 => imageops::rotate90(&imageops::flip_horizontal(&image)),
+        _ => return Err(crate::Error::WaylandScreencopyFailed),
+    };
+
+    Ok(Frame {
+        width: image.width(),
+        height: image.height(),
+        data: image.into_raw(),
+    })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn restores_all_buffer_transforms() {
+        use image::imageops;
+        use wl_output::Transform;
+
+        let original =
+            image::RgbaImage::from_fn(3, 2, |x, y| image::Rgba([(y * 3 + x) as u8, 0, 0, 255]));
+
+        let cases = [
+            (Transform::Normal, original.clone()),
+            (Transform::_90, imageops::rotate270(&original)),
+            (Transform::_180, imageops::rotate180(&original)),
+            (Transform::_270, imageops::rotate90(&original)),
+            (Transform::Flipped, imageops::flip_horizontal(&original)),
+            (
+                Transform::Flipped90,
+                imageops::rotate270(&imageops::flip_horizontal(&original)),
+            ),
+            (
+                Transform::Flipped180,
+                imageops::rotate180(&imageops::flip_horizontal(&original)),
+            ),
+            (
+                Transform::Flipped270,
+                imageops::rotate90(&imageops::flip_horizontal(&original)),
+            ),
+        ];
+
+        for (transform, buffer) in cases {
+            let frame = transform_frame(
+                Frame {
+                    width: buffer.width(),
+                    height: buffer.height(),
+                    data: buffer.into_raw(),
+                },
+                Some(transform),
+            )
+            .unwrap();
+
+            assert_eq!(
+                (frame.width, frame.height),
+                original.dimensions(),
+                "{transform:?}"
+            );
+            assert_eq!(frame.data, original.as_raw().as_slice(), "{transform:?}");
+        }
+    }
 }
