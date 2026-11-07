@@ -9,10 +9,7 @@ use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
 
-use crate::{
-    backend::{Backend, BackendTarget, PositionedFrame, stitch_positioned},
-    frame::Frame,
-};
+use crate::backend::{Backend, BackendTarget, Frame, PositionedFrame, stitch_positioned};
 
 pub struct WaylandBackend {
     state: State,

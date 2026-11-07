@@ -1,7 +1,12 @@
 pub mod wayland;
 pub mod x11;
 
-use crate::frame::Frame;
+#[derive(Debug)]
+pub(crate) struct Frame {
+    pub data: Vec<u8>,
+    pub width: u32,
+    pub height: u32,
+}
 
 #[derive(Clone, Copy)]
 pub enum BackendTarget {
@@ -97,8 +102,7 @@ pub trait Backend {
 
 #[cfg(test)]
 mod tests {
-    use super::{PositionedFrame, stitch_positioned};
-    use crate::frame::Frame;
+    use super::{Frame, PositionedFrame, stitch_positioned};
 
     #[test]
     fn stitches_frames_at_positions() {

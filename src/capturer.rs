@@ -8,7 +8,7 @@ use image::{
 
 use crate::backend::wayland::WaylandBackend;
 use crate::backend::x11::X11Backend;
-use crate::backend::{Backend, BackendTarget};
+use crate::backend::{Backend, BackendTarget, Frame};
 
 pub struct Capturer {
     backend: Box<dyn Backend>,
@@ -138,7 +138,7 @@ impl Capturer {
 
     fn capture<F>(&mut self, capture: F) -> crate::Result<()>
     where
-        F: FnOnce(&mut dyn Backend) -> crate::Result<crate::frame::Frame>,
+        F: FnOnce(&mut dyn Backend) -> crate::Result<Frame>,
     {
         if io::stdout().is_terminal() {
             return Err(crate::Error::StdoutIsTerminal);
@@ -159,13 +159,7 @@ impl Capturer {
     }
 }
 
-fn crop_frame(
-    frame: &crate::frame::Frame,
-    x: u32,
-    y: u32,
-    width: u32,
-    height: u32,
-) -> crate::Result<crate::frame::Frame> {
+fn crop_frame(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> crate::Result<Frame> {
     if width == 0
         || height == 0
         || x.checked_add(width).is_none_or(|right| right > frame.width)
@@ -200,14 +194,14 @@ fn crop_frame(
         data.extend_from_slice(&frame.data[start..start + output_stride]);
     }
 
-    Ok(crate::frame::Frame {
+    Ok(Frame {
         data,
         width,
         height,
     })
 }
 
-fn encode_png(frame: &crate::frame::Frame) -> crate::Result<Vec<u8>> {
+fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
     let mut png = Cursor::new(Vec::new());
 
     PngEncoder::new_with_quality(&mut png, CompressionType::Fast, FilterType::Sub).write_image(
