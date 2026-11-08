@@ -189,9 +189,10 @@ impl WaylandBackend {
         // Queue all requests on the same connection before dispatching events.
         for output in outputs {
             let id = self.state.next_capture_id;
-            self.state.next_capture_id = id
-                .checked_add(1)
-                .ok_or(crate::Error::WaylandScreencopyFailed)?;
+            self.state.next_capture_id = CaptureId(
+                id.0.checked_add(1)
+                    .ok_or(crate::Error::WaylandScreencopyFailed)?,
+            );
             self.state.captures.insert(id, CaptureState::default());
 
             let capture = match &self.manager {
@@ -323,12 +324,15 @@ impl Drop for CaptureBuffer {
     }
 }
 
+#[derive(Clone, Copy, Default, Eq, Hash, PartialEq)]
+struct CaptureId(usize);
+
 #[derive(Default)]
 struct State {
     output_names: HashMap<u32, String>,
     output_layouts: HashMap<u32, OutputLayout>,
-    captures: HashMap<usize, CaptureState>,
-    next_capture_id: usize,
+    captures: HashMap<CaptureId, CaptureState>,
+    next_capture_id: CaptureId,
 }
 
 #[derive(Default)]
@@ -392,12 +396,12 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     }
 }
 
-impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, usize> for State {
+impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, CaptureId> for State {
     fn event(
         state: &mut Self,
         _frame: &zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
-        id: &usize,
+        id: &CaptureId,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -553,12 +557,14 @@ impl Drop for ActiveCapture {
     }
 }
 
-impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, usize> for State {
+impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, CaptureId>
+    for State
+{
     fn event(
         state: &mut Self,
         _session: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
         event: ext_image_copy_capture_session_v1::Event,
-        id: &usize,
+        id: &CaptureId,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -602,12 +608,12 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, u
     }
 }
 
-impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, usize> for State {
+impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, CaptureId> for State {
     fn event(
         state: &mut Self,
         _frame: &ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
         event: ext_image_copy_capture_frame_v1::Event,
-        id: &usize,
+        id: &CaptureId,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
@@ -675,8 +681,8 @@ mod tests {
         let queue = connection.new_event_queue::<State>();
         let qh = queue.handle();
         let mut state = State::default();
-        state.captures.insert(0, CaptureState::default());
-        state.captures.insert(1, CaptureState::default());
+        state.captures.insert(CaptureId(0), CaptureState::default());
+        state.captures.insert(CaptureId(1), CaptureState::default());
 
         fn send<P: Proxy>(
             state: &mut State,
@@ -685,10 +691,17 @@ mod tests {
             id: usize,
             event: P::Event,
         ) where
-            State: Dispatch<P, usize>,
+            State: Dispatch<P, CaptureId>,
         {
             let proxy = P::inert(connection.backend().downgrade());
-            <State as Dispatch<P, usize>>::event(state, &proxy, event, &id, connection, qh);
+            <State as Dispatch<P, CaptureId>>::event(
+                state,
+                &proxy,
+                event,
+                &CaptureId(id),
+                connection,
+                qh,
+            );
         }
 
         let mut wlr = |id, event| {
@@ -719,15 +732,22 @@ mod tests {
             },
         );
 
-        assert!(state.captures[&0].failed);
-        assert!(!state.captures[&0].ready);
-        assert!(state.captures[&1].ready);
-        assert!(state.captures[&1].check_error().is_ok());
-        assert_eq!(state.captures[&1].buffer_info.as_ref().unwrap().width, 2);
+        assert!(state.captures[&CaptureId(0)].failed);
+        assert!(!state.captures[&CaptureId(0)].ready);
+        assert!(state.captures[&CaptureId(1)].ready);
+        assert!(state.captures[&CaptureId(1)].check_error().is_ok());
+        assert_eq!(
+            state.captures[&CaptureId(1)]
+                .buffer_info
+                .as_ref()
+                .unwrap()
+                .width,
+            2
+        );
 
         state.captures.clear();
-        state.captures.insert(2, CaptureState::default());
-        state.captures.insert(3, CaptureState::default());
+        state.captures.insert(CaptureId(2), CaptureState::default());
+        state.captures.insert(CaptureId(3), CaptureState::default());
 
         let mut session = |id, event| {
             send::<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1>(
@@ -774,7 +794,7 @@ mod tests {
             (2, 4, 5, wl_shm::Format::Xrgb8888),
             (3, 6, 7, wl_shm::Format::Argb8888),
         ] {
-            let capture = &state.captures[&id];
+            let capture = &state.captures[&CaptureId(id)];
             let info = capture.buffer_info.as_ref().unwrap();
             assert!(capture.constraints_done);
             assert!(capture.check_error().is_ok());
