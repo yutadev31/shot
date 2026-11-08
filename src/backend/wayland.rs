@@ -44,8 +44,10 @@ impl Backend for WaylandBackend {
     fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
         let mut frames = Vec::with_capacity(self.outputs.len());
 
-        for output in self.outputs.clone() {
-            let frame = self.capture_one(&output.proxy)?;
+        let outputs = self.outputs.clone();
+        let captured = self.capture_outputs(&outputs)?;
+
+        for (output, frame) in outputs.iter().zip(captured) {
             let layout = self
                 .state
                 .output_layouts
@@ -69,7 +71,9 @@ impl Backend for WaylandBackend {
             .get(index)
             .cloned()
             .ok_or(crate::Error::NoMonitors)?;
-        self.capture_one(&output.proxy)
+        self.capture_outputs(&[output])?
+            .pop()
+            .ok_or(crate::Error::WaylandScreencopyFailed)
     }
 
     fn monitor_count(&self) -> usize {
@@ -177,49 +181,107 @@ impl WaylandBackend {
         })
     }
 
-    fn capture_one(&mut self, output: &wl_output::WlOutput) -> crate::Result<Frame> {
+    fn capture_outputs(&mut self, outputs: &[Output]) -> crate::Result<Vec<Frame>> {
+        self.state.captures.clear();
         let qh = self.event_queue.handle();
+        let mut captures = Vec::with_capacity(outputs.len());
 
-        self.state.reset();
+        // Queue all requests on the same connection before dispatching events.
+        for output in outputs {
+            let id = self.state.next_capture_id;
+            self.state.next_capture_id = id
+                .checked_add(1)
+                .ok_or(crate::Error::WaylandScreencopyFailed)?;
+            self.state.captures.insert(id, CaptureState::default());
 
-        let capture = match &self.manager {
-            CaptureManager::Ext { capture, source } => {
-                let source = source.create_source(output, &qh, ());
-                let session = capture.create_session(
-                    &source,
-                    ext_image_copy_capture_manager_v1::Options::empty(),
-                    &qh,
-                    (),
-                );
-                source.destroy();
-                ActiveCapture::Ext {
-                    frame: session.create_frame(&qh, ()),
-                    session,
+            let capture = match &self.manager {
+                CaptureManager::Ext { capture, source } => {
+                    let source = source.create_source(&output.proxy, &qh, ());
+                    let session = capture.create_session(
+                        &source,
+                        ext_image_copy_capture_manager_v1::Options::empty(),
+                        &qh,
+                        id,
+                    );
+                    source.destroy();
+                    ActiveCapture::Ext {
+                        frame: session.create_frame(&qh, id),
+                        session,
+                    }
                 }
+                CaptureManager::Wlr(manager) => {
+                    ActiveCapture::Wlr(manager.capture_output(0, &output.proxy, &qh, id))
+                }
+            };
+            captures.push((id, capture));
+        }
+
+        let mut buffers = Vec::with_capacity(captures.len());
+
+        for (id, capture) in &captures {
+            while !self.state.captures[id].constraints_done && !self.state.captures[id].failed {
+                self.event_queue.blocking_dispatch(&mut self.state)?;
             }
-            CaptureManager::Wlr(manager) => {
-                ActiveCapture::Wlr(manager.capture_output(0, output, &qh, ()))
+
+            let state = self.state.captures.get_mut(id).unwrap();
+            state.check_error()?;
+            let info = state
+                .buffer_info
+                .take()
+                .ok_or(crate::Error::WaylandScreencopyFailed)?;
+            let buffer = CaptureBuffer::new(&self.shm, &qh, info)?;
+
+            match capture {
+                ActiveCapture::Ext { frame, .. } => {
+                    frame.attach_buffer(&buffer.proxy);
+                    frame.damage_buffer(0, 0, buffer.info.width as i32, buffer.info.height as i32);
+                    frame.capture();
+                }
+                ActiveCapture::Wlr(frame) => frame.copy(&buffer.proxy),
             }
-        };
 
-        while !self.state.constraints_done && !self.state.failed {
-            self.event_queue.blocking_dispatch(&mut self.state)?;
+            buffers.push(buffer);
         }
 
-        if let Some(format) = self.state.unsupported_format {
-            return Err(crate::Error::UnsupportedWaylandPixelFormat(format));
+        let mut frames = Vec::with_capacity(captures.len());
+
+        for ((id, _), buffer) in captures.iter().zip(&buffers) {
+            while !self.state.captures[id].ready && !self.state.captures[id].failed {
+                self.event_queue.blocking_dispatch(&mut self.state)?;
+            }
+
+            let state = &self.state.captures[id];
+            state.check_error()?;
+            let info = &buffer.info;
+            let data = convert_to_rgba(
+                &buffer.mmap,
+                info.width,
+                info.height,
+                info.stride,
+                info.format,
+            )?;
+            frames.push(transform_frame(
+                Frame {
+                    data,
+                    width: info.width,
+                    height: info.height,
+                },
+                state.transform,
+            )?);
         }
 
-        if self.state.failed {
-            return Err(crate::Error::WaylandScreencopyFailed);
-        }
+        Ok(frames)
+    }
+}
 
-        let info = self
-            .state
-            .buffer_info
-            .take()
-            .ok_or(crate::Error::WaylandScreencopyFailed)?;
+struct CaptureBuffer {
+    proxy: wl_buffer::WlBuffer,
+    mmap: memmap2::MmapMut,
+    info: BufferInfo,
+}
 
+impl CaptureBuffer {
+    fn new(shm: &wl_shm::WlShm, qh: &QueueHandle<State>, info: BufferInfo) -> crate::Result<Self> {
         let row_size = info.width as usize * 4;
         let stride = info.stride as usize;
 
@@ -231,6 +293,9 @@ impl WaylandBackend {
             .checked_mul(info.height as usize)
             .ok_or(crate::Error::InvalidImageBuffer)?;
         let size_i32 = i32::try_from(size).map_err(|_| crate::Error::InvalidImageBuffer)?;
+        let width = i32::try_from(info.width).map_err(|_| crate::Error::InvalidImageBuffer)?;
+        let height = i32::try_from(info.height).map_err(|_| crate::Error::InvalidImageBuffer)?;
+        let stride = i32::try_from(info.stride).map_err(|_| crate::Error::InvalidImageBuffer)?;
 
         let file = tempfile::tempfile()?;
         file.set_len(size as u64)?;
@@ -238,49 +303,23 @@ impl WaylandBackend {
         // SAFETY: This private file has length `size` and is never truncated.
         // The compositor writes through the shared buffer before sending Ready.
         let mmap = unsafe { memmap2::MmapMut::map_mut(&file)? };
-        let pool = self.shm.create_pool(file.as_fd(), size_i32, &qh, ());
+        let pool = shm.create_pool(file.as_fd(), size_i32, qh, ());
 
-        let buffer = pool.create_buffer(
-            0,
-            i32::try_from(info.width).map_err(|_| crate::Error::InvalidImageBuffer)?,
-            i32::try_from(info.height).map_err(|_| crate::Error::InvalidImageBuffer)?,
-            i32::try_from(info.stride).map_err(|_| crate::Error::InvalidImageBuffer)?,
-            info.format,
-            &qh,
-            (),
-        );
-
-        match &capture {
-            ActiveCapture::Ext { frame, .. } => {
-                frame.attach_buffer(&buffer);
-                frame.damage_buffer(0, 0, info.width as i32, info.height as i32);
-                frame.capture();
-            }
-            ActiveCapture::Wlr(frame) => frame.copy(&buffer),
-        }
+        let buffer = pool.create_buffer(0, width, height, stride, info.format, qh, ());
 
         pool.destroy();
 
-        while !self.state.ready && !self.state.failed {
-            self.event_queue.blocking_dispatch(&mut self.state)?;
-        }
+        Ok(Self {
+            proxy: buffer,
+            mmap,
+            info,
+        })
+    }
+}
 
-        buffer.destroy();
-
-        if self.state.failed {
-            return Err(crate::Error::WaylandScreencopyFailed);
-        }
-
-        let data = convert_to_rgba(&mmap, info.width, info.height, info.stride, info.format)?;
-
-        transform_frame(
-            Frame {
-                data,
-                width: info.width,
-                height: info.height,
-            },
-            self.state.transform,
-        )
+impl Drop for CaptureBuffer {
+    fn drop(&mut self) {
+        self.proxy.destroy();
     }
 }
 
@@ -288,6 +327,12 @@ impl WaylandBackend {
 struct State {
     output_names: HashMap<u32, String>,
     output_layouts: HashMap<u32, OutputLayout>,
+    captures: HashMap<usize, CaptureState>,
+    next_capture_id: usize,
+}
+
+#[derive(Default)]
+struct CaptureState {
     buffer_info: Option<BufferInfo>,
     constraints_done: bool,
     ext_size: Option<(u32, u32)>,
@@ -298,16 +343,17 @@ struct State {
     unsupported_format: Option<wl_shm::Format>,
 }
 
-impl State {
-    fn reset(&mut self) {
-        self.buffer_info = None;
-        self.constraints_done = false;
-        self.ext_size = None;
-        self.ext_format = None;
-        self.transform = None;
-        self.ready = false;
-        self.failed = false;
-        self.unsupported_format = None;
+impl CaptureState {
+    fn check_error(&self) -> crate::Result<()> {
+        if let Some(format) = self.unsupported_format {
+            return Err(crate::Error::UnsupportedWaylandPixelFormat(format));
+        }
+
+        if self.failed {
+            return Err(crate::Error::WaylandScreencopyFailed);
+        }
+
+        Ok(())
     }
 }
 
@@ -346,15 +392,19 @@ impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     }
 }
 
-impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, ()> for State {
+impl Dispatch<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1, usize> for State {
     fn event(
         state: &mut Self,
         _frame: &zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1,
         event: zwlr_screencopy_frame_v1::Event,
-        _data: &(),
+        id: &usize,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        let Some(state) = state.captures.get_mut(id) else {
+            return;
+        };
+
         match event {
             zwlr_screencopy_frame_v1::Event::Buffer {
                 format: WEnum::Value(format),
@@ -503,15 +553,19 @@ impl Drop for ActiveCapture {
     }
 }
 
-impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, ()> for State {
+impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, usize> for State {
     fn event(
         state: &mut Self,
         _session: &ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1,
         event: ext_image_copy_capture_session_v1::Event,
-        _data: &(),
+        id: &usize,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        let Some(state) = state.captures.get_mut(id) else {
+            return;
+        };
+
         use ext_image_copy_capture_session_v1::Event;
         match event {
             Event::BufferSize { width, height } => state.ext_size = Some((width, height)),
@@ -548,15 +602,19 @@ impl Dispatch<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1, (
     }
 }
 
-impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, ()> for State {
+impl Dispatch<ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1, usize> for State {
     fn event(
         state: &mut Self,
         _frame: &ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1,
         event: ext_image_copy_capture_frame_v1::Event,
-        _data: &(),
+        id: &usize,
         _conn: &Connection,
         _qh: &QueueHandle<Self>,
     ) {
+        let Some(state) = state.captures.get_mut(id) else {
+            return;
+        };
+
         use ext_image_copy_capture_frame_v1::Event;
         match event {
             Event::Transform {
@@ -606,6 +664,126 @@ fn transform_frame(frame: Frame, transform: Option<wl_output::Transform>) -> cra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn routes_interleaved_capture_events_to_their_requests() {
+        use std::os::unix::net::UnixStream;
+        use wayland_client::Proxy;
+
+        let (socket, _server) = UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let queue = connection.new_event_queue::<State>();
+        let qh = queue.handle();
+        let mut state = State::default();
+        state.captures.insert(0, CaptureState::default());
+        state.captures.insert(1, CaptureState::default());
+
+        fn send<P: Proxy>(
+            state: &mut State,
+            connection: &Connection,
+            qh: &QueueHandle<State>,
+            id: usize,
+            event: P::Event,
+        ) where
+            State: Dispatch<P, usize>,
+        {
+            let proxy = P::inert(connection.backend().downgrade());
+            <State as Dispatch<P, usize>>::event(state, &proxy, event, &id, connection, qh);
+        }
+
+        let mut wlr = |id, event| {
+            send::<zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1>(
+                &mut state,
+                &connection,
+                &qh,
+                id,
+                event,
+            );
+        };
+        wlr(
+            1,
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format: WEnum::Value(wl_shm::Format::Xrgb8888),
+                width: 2,
+                height: 3,
+                stride: 8,
+            },
+        );
+        wlr(0, zwlr_screencopy_frame_v1::Event::Failed);
+        wlr(
+            1,
+            zwlr_screencopy_frame_v1::Event::Ready {
+                tv_sec_hi: 0,
+                tv_sec_lo: 0,
+                tv_nsec: 0,
+            },
+        );
+
+        assert!(state.captures[&0].failed);
+        assert!(!state.captures[&0].ready);
+        assert!(state.captures[&1].ready);
+        assert!(state.captures[&1].check_error().is_ok());
+        assert_eq!(state.captures[&1].buffer_info.as_ref().unwrap().width, 2);
+
+        state.captures.clear();
+        state.captures.insert(2, CaptureState::default());
+        state.captures.insert(3, CaptureState::default());
+
+        let mut session = |id, event| {
+            send::<ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1>(
+                &mut state,
+                &connection,
+                &qh,
+                id,
+                event,
+            );
+        };
+        use ext_image_copy_capture_session_v1::Event;
+        session(
+            2,
+            Event::BufferSize {
+                width: 4,
+                height: 5,
+            },
+        );
+        session(
+            3,
+            Event::BufferSize {
+                width: 6,
+                height: 7,
+            },
+        );
+        session(
+            3,
+            Event::ShmFormat {
+                format: WEnum::Value(wl_shm::Format::Argb8888),
+            },
+        );
+        session(
+            2,
+            Event::ShmFormat {
+                format: WEnum::Value(wl_shm::Format::Xrgb8888),
+            },
+        );
+        session(3, Event::Done);
+        session(2, Event::Done);
+        // Late events from the preceding batch must not affect new requests.
+        session(0, Event::Stopped);
+
+        for (id, width, height, format) in [
+            (2, 4, 5, wl_shm::Format::Xrgb8888),
+            (3, 6, 7, wl_shm::Format::Argb8888),
+        ] {
+            let capture = &state.captures[&id];
+            let info = capture.buffer_info.as_ref().unwrap();
+            assert!(capture.constraints_done);
+            assert!(capture.check_error().is_ok());
+            assert_eq!(
+                (info.width, info.height, info.format),
+                (width, height, format)
+            );
+        }
+    }
 
     #[test]
     fn restores_all_buffer_transforms() {
