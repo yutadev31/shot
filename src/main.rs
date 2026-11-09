@@ -14,6 +14,7 @@ struct Cli {
     region: Option<Vec<String>>,
 }
 
+/// Reports capture failures and exits with a nonzero status.
 fn main() {
     if let Err(error) = run() {
         eprintln!("Error: {error}");
@@ -21,6 +22,7 @@ fn main() {
     }
 }
 
+/// Dispatches the requested monitor or desktop-region capture.
 fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
@@ -39,6 +41,7 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+/// Parses slurp's logical rectangle and rejects malformed or empty dimensions.
 fn parse_region(value: &str) -> Result<(i32, i32, u32, u32), &'static str> {
     let invalid = "invalid region: expected X,Y WIDTHxHEIGHT with positive dimensions";
     let mut parts = value.split_whitespace();
@@ -75,6 +78,7 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    /// Checks both shell argument forms of a slurp selection.
     fn accepts_slurp_output_with_or_without_quotes() {
         for args in [
             vec!["shot", "-r", "-100,20", "300x200"],
@@ -89,6 +93,7 @@ mod tests {
     }
 
     #[test]
+    /// Rejects invalid dimensions, overflow, extra fields, and monitor conflicts.
     fn rejects_invalid_regions() {
         for value in [
             "",

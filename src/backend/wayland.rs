@@ -14,6 +14,7 @@ use wayland_protocols::ext::{
         ext_image_copy_capture_session_v1,
     },
 };
+use wayland_protocols::xdg::xdg_output::zv1::client::{zxdg_output_manager_v1, zxdg_output_v1};
 use wayland_protocols_wlr::screencopy::v1::client::{
     zwlr_screencopy_frame_v1, zwlr_screencopy_manager_v1,
 };
@@ -29,6 +30,7 @@ pub struct WaylandBackend {
     names: Vec<String>,
     selected_monitor: Option<usize>,
     manager: CaptureManager,
+    _xdg_outputs: Vec<zxdg_output_v1::ZxdgOutputV1>,
 }
 
 impl Backend for WaylandBackend {
@@ -54,12 +56,21 @@ impl Backend for WaylandBackend {
                 .get(&output.global_name)
                 .copied()
                 .ok_or(crate::Error::WaylandScreencopyFailed)?;
-            frames.push(PositionedFrame {
+            frames.push((frame, layout));
+        }
+
+        if self.state.has_xdg_output {
+            return compose_logical_region(&frames, None);
+        }
+
+        let frames: Vec<_> = frames
+            .into_iter()
+            .map(|(frame, layout)| PositionedFrame {
                 frame,
                 x: layout.x,
                 y: layout.y,
-            });
-        }
+            })
+            .collect();
 
         stitch_positioned(&frames)
     }
@@ -76,6 +87,7 @@ impl Backend for WaylandBackend {
             .ok_or(crate::Error::WaylandScreencopyFailed)
     }
 
+    /// Returns the logical origin also used to place captured outputs.
     fn desktop_origin(&self) -> (i32, i32) {
         self.state
             .output_layouts
@@ -83,6 +95,33 @@ impl Backend for WaylandBackend {
             .fold((i32::MAX, i32::MAX), |origin, layout| {
                 (origin.0.min(layout.x), origin.1.min(layout.y))
             })
+    }
+
+    /// Maps each output's logical selection to its own transformed buffer pixels.
+    fn capture_desktop_region(&mut self, region: (i32, i32, u32, u32)) -> crate::Result<Frame> {
+        if !self.state.has_xdg_output {
+            return Err(crate::Error::DisplayUnavailable(
+                "Wayland region capture requires xdg-output logical geometry".to_string(),
+            ));
+        }
+
+        let outputs = self.outputs.clone();
+        let captured = self.capture_outputs(&outputs)?;
+        let frames = outputs
+            .iter()
+            .zip(captured)
+            .map(|(output, frame)| {
+                let layout = self
+                    .state
+                    .output_layouts
+                    .get(&output.global_name)
+                    .copied()
+                    .ok_or(crate::Error::WaylandScreencopyFailed)?;
+                Ok((frame, layout))
+            })
+            .collect::<crate::Result<Vec<_>>>()?;
+
+        compose_logical_region(&frames, Some(region))
     }
 
     fn monitor_count(&self) -> usize {
@@ -138,7 +177,7 @@ impl WaylandBackend {
         }
 
         let selected_globals = output_globals.clone();
-        let outputs = selected_globals
+        let outputs: Vec<Output> = selected_globals
             .clone()
             .into_iter()
             .map(|(name, version)| Output {
@@ -166,6 +205,25 @@ impl WaylandBackend {
 
         let mut state = State::default();
 
+        let has_xdg_output = globals.contents().with_list(|globals| {
+            globals
+                .iter()
+                .any(|global| global.interface == "zxdg_output_manager_v1")
+        });
+        state.has_xdg_output = has_xdg_output;
+        let mut xdg_outputs = Vec::new();
+        if has_xdg_output {
+            let manager = globals.bind::<zxdg_output_manager_v1::ZxdgOutputManagerV1, _, _>(
+                &qh,
+                1..=3,
+                (),
+            )?;
+            for output in &outputs {
+                xdg_outputs.push(manager.get_xdg_output(&output.proxy, &qh, output.global_name));
+            }
+            manager.destroy();
+        }
+
         event_queue.roundtrip(&mut state)?;
 
         let names = selected_globals
@@ -187,6 +245,7 @@ impl WaylandBackend {
             names,
             selected_monitor: monitor_index,
             manager,
+            _xdg_outputs: xdg_outputs,
         })
     }
 
@@ -338,6 +397,7 @@ struct CaptureId(usize);
 
 #[derive(Default)]
 struct State {
+    has_xdg_output: bool,
     output_names: HashMap<u32, String>,
     output_layouts: HashMap<u32, OutputLayout>,
     captures: HashMap<CaptureId, CaptureState>,
@@ -383,7 +443,7 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
             wl_output::Event::Name { name } => {
                 state.output_names.insert(*global_name, name);
             }
-            wl_output::Event::Geometry { x, y, .. } => {
+            wl_output::Event::Geometry { x, y, .. } if !state.has_xdg_output => {
                 state.output_layouts.entry(*global_name).or_default().x = x;
 
                 state.output_layouts.entry(*global_name).or_default().y = y;
@@ -392,6 +452,33 @@ impl Dispatch<wl_output::WlOutput, u32> for State {
         }
     }
 }
+
+impl Dispatch<zxdg_output_v1::ZxdgOutputV1, u32> for State {
+    /// Records the same logical coordinate system used by region selectors.
+    fn event(
+        state: &mut Self,
+        _output: &zxdg_output_v1::ZxdgOutputV1,
+        event: zxdg_output_v1::Event,
+        global_name: &u32,
+        _conn: &Connection,
+        _qh: &QueueHandle<Self>,
+    ) {
+        let layout = state.output_layouts.entry(*global_name).or_default();
+        match event {
+            zxdg_output_v1::Event::LogicalPosition { x, y } => {
+                layout.x = x;
+                layout.y = y;
+            }
+            zxdg_output_v1::Event::LogicalSize { width, height } => {
+                layout.width = width;
+                layout.height = height;
+            }
+            _ => {}
+        }
+    }
+}
+
+wayland_client::delegate_noop!(State: ignore zxdg_output_manager_v1::ZxdgOutputManagerV1);
 
 impl Dispatch<wl_registry::WlRegistry, GlobalListContents> for State {
     fn event(
@@ -472,6 +559,142 @@ struct BufferInfo {
 struct OutputLayout {
     x: i32,
     y: i32,
+    width: i32,
+    height: i32,
+}
+
+/// Crops in each output's buffer space, then stitches at the largest selected scale.
+fn compose_logical_region(
+    frames: &[(Frame, OutputLayout)],
+    region: Option<(i32, i32, u32, u32)>,
+) -> crate::Result<Frame> {
+    if frames.is_empty() {
+        return Err(crate::Error::NoMonitors);
+    }
+
+    if frames.iter().any(|(frame, layout)| {
+        layout.width <= 0 || layout.height <= 0 || frame.width == 0 || frame.height == 0
+    }) {
+        return Err(crate::Error::InvalidImageBuffer);
+    }
+
+    let min_x = frames
+        .iter()
+        .map(|(_, layout)| i64::from(layout.x))
+        .min()
+        .unwrap();
+    let min_y = frames
+        .iter()
+        .map(|(_, layout)| i64::from(layout.y))
+        .min()
+        .unwrap();
+    let max_x = frames
+        .iter()
+        .map(|(_, layout)| i64::from(layout.x) + i64::from(layout.width))
+        .max()
+        .unwrap();
+    let max_y = frames
+        .iter()
+        .map(|(_, layout)| i64::from(layout.y) + i64::from(layout.height))
+        .max()
+        .unwrap();
+    let (left, top, right, bottom) = match region {
+        Some((x, y, width, height)) => (
+            i64::from(x),
+            i64::from(y),
+            i64::from(x) + i64::from(width),
+            i64::from(y) + i64::from(height),
+        ),
+        None => (min_x, min_y, max_x, max_y),
+    };
+
+    if left < min_x
+        || top < min_y
+        || right > max_x
+        || bottom > max_y
+        || left >= right
+        || top >= bottom
+    {
+        return Err(crate::Error::InvalidRegion);
+    }
+
+    let selected: Vec<_> = frames
+        .iter()
+        .filter(|(_, layout)| {
+            i64::from(layout.x) < right
+                && i64::from(layout.x) + i64::from(layout.width) > left
+                && i64::from(layout.y) < bottom
+                && i64::from(layout.y) + i64::from(layout.height) > top
+        })
+        .collect();
+    let scale = selected
+        .iter()
+        .map(|(frame, layout)| {
+            (f64::from(frame.width) / f64::from(layout.width))
+                .max(f64::from(frame.height) / f64::from(layout.height))
+        })
+        .reduce(f64::max)
+        .ok_or(crate::Error::InvalidRegion)?;
+    let scaled = |value: i64| -> crate::Result<u32> {
+        let pixels = (value as f64 * scale).round();
+        if !(0.0..=f64::from(u32::MAX)).contains(&pixels) {
+            return Err(crate::Error::InvalidImageBuffer);
+        }
+        Ok(pixels as u32)
+    };
+    let width = scaled(right - left)?;
+    let height = scaled(bottom - top)?;
+    let size = (width as usize)
+        .checked_mul(height as usize)
+        .and_then(|size| size.checked_mul(4))
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+    let mut image = image::RgbaImage::from_raw(width, height, vec![0; size])
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+
+    for (frame, layout) in selected {
+        let x = left.max(i64::from(layout.x));
+        let y = top.max(i64::from(layout.y));
+        let end_x = right.min(i64::from(layout.x) + i64::from(layout.width));
+        let end_y = bottom.min(i64::from(layout.y) + i64::from(layout.height));
+        // Round the start down and the end up so fractional buffer pixels are retained.
+        let buffer_x = ((x - i64::from(layout.x)) as u64 * u64::from(frame.width)
+            / layout.width as u64) as u32;
+        let buffer_y = ((y - i64::from(layout.y)) as u64 * u64::from(frame.height)
+            / layout.height as u64) as u32;
+        let buffer_end_x = (((end_x - i64::from(layout.x)) as u64 * u64::from(frame.width))
+            .div_ceil(layout.width as u64)) as u32;
+        let buffer_end_y = (((end_y - i64::from(layout.y)) as u64 * u64::from(frame.height))
+            .div_ceil(layout.height as u64)) as u32;
+        let cropped = crate::capturer::crop_frame(
+            frame,
+            buffer_x,
+            buffer_y,
+            buffer_end_x - buffer_x,
+            buffer_end_y - buffer_y,
+        )?;
+        let source = image::RgbaImage::from_raw(cropped.width, cropped.height, cropped.data)
+            .ok_or(crate::Error::InvalidImageBuffer)?;
+        let destination_x = scaled(x - left)?;
+        let destination_y = scaled(y - top)?;
+        let resized = image::imageops::resize(
+            &source,
+            scaled(end_x - left)? - destination_x,
+            scaled(end_y - top)? - destination_y,
+            image::imageops::FilterType::Triangle,
+        );
+        image::imageops::replace(
+            &mut image,
+            &resized,
+            i64::from(destination_x),
+            i64::from(destination_y),
+        );
+    }
+
+    Ok(Frame {
+        data: image.into_raw(),
+        width,
+        height,
+    })
 }
 
 #[derive(Clone)]
@@ -679,6 +902,161 @@ fn transform_frame(frame: Frame, transform: Option<wl_output::Transform>) -> cra
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Ensures wl_output geometry cannot overwrite xdg-output logical positions.
+    #[test]
+    fn prefers_xdg_output_geometry() {
+        use std::os::unix::net::UnixStream;
+        use wayland_client::Proxy;
+
+        let (socket, _server) = UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let queue = connection.new_event_queue::<State>();
+        let qh = queue.handle();
+        let mut state = State {
+            has_xdg_output: true,
+            ..State::default()
+        };
+        let output = zxdg_output_v1::ZxdgOutputV1::inert(connection.backend().downgrade());
+
+        for event in [
+            zxdg_output_v1::Event::LogicalPosition { x: -100, y: 20 },
+            zxdg_output_v1::Event::LogicalSize {
+                width: 100,
+                height: 200,
+            },
+        ] {
+            <State as Dispatch<zxdg_output_v1::ZxdgOutputV1, u32>>::event(
+                &mut state,
+                &output,
+                event,
+                &1,
+                &connection,
+                &qh,
+            );
+        }
+
+        let output = wl_output::WlOutput::inert(connection.backend().downgrade());
+        <State as Dispatch<wl_output::WlOutput, u32>>::event(
+            &mut state,
+            &output,
+            wl_output::Event::Geometry {
+                x: 0,
+                y: 0,
+                physical_width: 0,
+                physical_height: 0,
+                subpixel: WEnum::Value(wl_output::Subpixel::Unknown),
+                make: String::new(),
+                model: String::new(),
+                transform: WEnum::Value(wl_output::Transform::Normal),
+            },
+            &1,
+            &connection,
+            &qh,
+        );
+
+        let layout = state.output_layouts[&1];
+        assert_eq!(
+            (layout.x, layout.y, layout.width, layout.height),
+            (-100, 20, 100, 200)
+        );
+    }
+
+    /// Preserves native pixels when cropping a scaled output at a negative position.
+    #[test]
+    fn crops_scaled_logical_coordinates_in_buffer_space() {
+        let frames = [(
+            Frame {
+                data: [1, 2, 3, 4]
+                    .into_iter()
+                    .flat_map(|value| [value, 0, 0, 255])
+                    .collect::<Vec<_>>()
+                    .repeat(2),
+                width: 4,
+                height: 2,
+            },
+            OutputLayout {
+                x: -2,
+                y: -1,
+                width: 2,
+                height: 1,
+            },
+        )];
+        let result = compose_logical_region(&frames, Some((-1, -1, 1, 1))).unwrap();
+
+        assert_eq!((result.width, result.height), (2, 2));
+        assert_eq!(result.data, [3, 0, 0, 255, 4, 0, 0, 255].repeat(2));
+        assert!(compose_logical_region(&frames, Some((-3, -1, 1, 1))).is_err());
+        assert!(compose_logical_region(&frames, Some((-1, -1, 0, 1))).is_err());
+    }
+
+    /// Crops each source independently when a selection spans different scales.
+    #[test]
+    fn stitches_mixed_scale_selection() {
+        let frames = [
+            (
+                Frame {
+                    data: [1, 0, 0, 255].repeat(4),
+                    width: 2,
+                    height: 2,
+                },
+                OutputLayout {
+                    x: -2,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                },
+            ),
+            (
+                Frame {
+                    data: [5, 6, 7, 8]
+                        .into_iter()
+                        .flat_map(|value| [value, 0, 0, 255])
+                        .collect::<Vec<_>>()
+                        .repeat(4),
+                    width: 4,
+                    height: 4,
+                },
+                OutputLayout {
+                    x: 0,
+                    y: 0,
+                    width: 2,
+                    height: 2,
+                },
+            ),
+        ];
+        let result = compose_logical_region(&frames, Some((-1, 0, 2, 2))).unwrap();
+
+        assert_eq!((result.width, result.height), (4, 4));
+        assert_eq!(
+            result.data,
+            [1, 0, 0, 255, 1, 0, 0, 255, 5, 0, 0, 255, 6, 0, 0, 255].repeat(4)
+        );
+        let desktop = compose_logical_region(&frames, None).unwrap();
+        assert_eq!((desktop.width, desktop.height), (8, 4));
+    }
+
+    /// Uses actual buffer ratios for fractional scaling and rotated logical geometry.
+    #[test]
+    fn handles_fractional_scale_and_portrait_buffers() {
+        let frames = [(
+            Frame {
+                data: [7, 8, 9, 255].repeat(24),
+                width: 4,
+                height: 6,
+            },
+            OutputLayout {
+                x: 10,
+                y: 20,
+                width: 3,
+                height: 4,
+            },
+        )];
+        let result = compose_logical_region(&frames, Some((11, 21, 1, 2))).unwrap();
+
+        assert_eq!((result.width, result.height), (2, 3));
+        assert_eq!(result.data, [7, 8, 9, 255].repeat(6));
+    }
 
     #[test]
     fn routes_interleaved_capture_events_to_their_requests() {

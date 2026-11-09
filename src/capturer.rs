@@ -171,7 +171,14 @@ impl CaptureSession {
     }
 }
 
-fn crop_frame(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> crate::Result<Frame> {
+/// Copies a pixel rectangle, rejecting empty, overflowing, or out-of-bounds regions.
+pub(crate) fn crop_frame(
+    frame: &Frame,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> crate::Result<Frame> {
     if width == 0
         || height == 0
         || x.checked_add(width).is_none_or(|right| right > frame.width)
@@ -233,13 +240,7 @@ impl Capturer {
     /// Returns an error if the region is invalid or capture fails.
     pub fn capture_desktop_region(region: (i32, i32, u32, u32)) -> crate::Result<()> {
         let mut session = CaptureSession::new_for_all_monitors()?;
-        let (origin_x, origin_y) = session.backend.desktop_origin();
-        let x = u32::try_from(i64::from(region.0) - i64::from(origin_x))
-            .map_err(|_| crate::Error::InvalidRegion)?;
-        let y = u32::try_from(i64::from(region.1) - i64::from(origin_y))
-            .map_err(|_| crate::Error::InvalidRegion)?;
-        session.set_region((x, y, region.2, region.3))?;
-        session.capture_all_outputs()
+        session.capture(|backend| backend.capture_desktop_region(region))
     }
 
     /// Captures the zero-based monitor index to standard output as PNG.
@@ -298,6 +299,7 @@ mod tests {
     use super::{Frame, crop_frame};
 
     #[test]
+    /// Verifies copied pixels and rejects empty, overflowing, or out-of-bounds crops.
     fn crops_pixels_and_rejects_out_of_bounds_regions() {
         let frame = Frame {
             data: (0..24).collect(),

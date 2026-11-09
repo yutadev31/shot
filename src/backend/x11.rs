@@ -66,6 +66,7 @@ impl Backend for X11Backend {
         self.capture_monitor(&monitor)
     }
 
+    /// Returns the origin of the stitched X11 monitor rectangles.
     fn desktop_origin(&self) -> (i32, i32) {
         self.monitors
             .iter()

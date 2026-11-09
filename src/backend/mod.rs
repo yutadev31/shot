@@ -97,7 +97,18 @@ pub trait Backend {
 
     fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
 
+    /// Returns the top-left desktop coordinate used when stitching outputs.
     fn desktop_origin(&self) -> (i32, i32);
+
+    /// Captures a desktop region; pixel-coordinate backends crop their stitched image.
+    fn capture_desktop_region(&mut self, region: (i32, i32, u32, u32)) -> crate::Result<Frame> {
+        let (origin_x, origin_y) = self.desktop_origin();
+        let x = u32::try_from(i64::from(region.0) - i64::from(origin_x))
+            .map_err(|_| crate::Error::InvalidRegion)?;
+        let y = u32::try_from(i64::from(region.1) - i64::from(origin_y))
+            .map_err(|_| crate::Error::InvalidRegion)?;
+        crate::capturer::crop_frame(&self.capture_all_outputs()?, x, y, region.2, region.3)
+    }
 
     fn monitor_count(&self) -> usize;
 
