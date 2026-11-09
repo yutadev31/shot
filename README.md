@@ -52,6 +52,22 @@ shot --monitor HDMI-A-1 > screenshot.png
 
 The short option `-m` is also available.
 
+### Capture a region
+
+Use desktop coordinates in `X,Y WIDTHxHEIGHT` format (negative coordinates are supported):
+
+```sh
+shot --region "100,200 640x480" > screenshot.png
+shot -r $(slurp) > screenshot.png
+```
+
+Quoted slurp output (`shot -r "$(slurp)"`) is also supported. The region must
+fit within the desktop image. `--region` cannot be combined with `--monitor`.
+
+On Wayland, region coordinates use the compositor's logical desktop geometry
+and require the `xdg-output` protocol. Each output is cropped at its own buffer
+scale; images spanning different scales use the largest selected scale.
+
 ### Copy a screenshot to the clipboard
 
 Use [cpst](https://github.com/yutadev31/cpst) to copy a screenshot directly to the system clipboard:

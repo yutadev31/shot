@@ -171,7 +171,14 @@ impl CaptureSession {
     }
 }
 
-fn crop_frame(frame: &Frame, x: u32, y: u32, width: u32, height: u32) -> crate::Result<Frame> {
+/// Copies a pixel rectangle, rejecting empty, overflowing, or out-of-bounds regions.
+pub(crate) fn crop_frame(
+    frame: &Frame,
+    x: u32,
+    y: u32,
+    width: u32,
+    height: u32,
+) -> crate::Result<Frame> {
     if width == 0
         || height == 0
         || x.checked_add(width).is_none_or(|right| right > frame.width)
@@ -227,6 +234,15 @@ fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
 }
 
 impl Capturer {
+    /// Captures a region in desktop coordinates to standard output as PNG.
+    ///
+    /// # Errors
+    /// Returns an error if the region is invalid or capture fails.
+    pub fn capture_desktop_region(region: (i32, i32, u32, u32)) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_all_monitors()?;
+        session.capture(|backend| backend.capture_desktop_region(region))
+    }
+
     /// Captures the zero-based monitor index to standard output as PNG.
     ///
     /// # Errors
@@ -275,5 +291,36 @@ impl Capturer {
     /// Returns an error if backend initialization fails.
     pub fn monitor_names() -> crate::Result<Vec<String>> {
         Ok(CaptureSession::create_backend(BackendTarget::All)?.monitor_names())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Frame, crop_frame};
+
+    #[test]
+    /// Verifies copied pixels and rejects empty, overflowing, or out-of-bounds crops.
+    fn crops_pixels_and_rejects_out_of_bounds_regions() {
+        let frame = Frame {
+            data: (0..24).collect(),
+            width: 3,
+            height: 2,
+        };
+        let cropped = crop_frame(&frame, 1, 0, 2, 2).unwrap();
+
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(
+            cropped.data,
+            [&frame.data[4..12], &frame.data[16..24]].concat()
+        );
+
+        for region in [
+            (2, 0, 2, 1),
+            (0, 1, 1, 2),
+            (0, 0, 0, 1),
+            (u32::MAX, 0, 1, 1),
+        ] {
+            assert!(crop_frame(&frame, region.0, region.1, region.2, region.3).is_err());
+        }
     }
 }
