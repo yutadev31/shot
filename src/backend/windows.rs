@@ -129,6 +129,17 @@ impl Backend for WindowsBackend {
         stitch_positioned(&frames)
     }
 
+    fn desktop_origin(&self) -> (i32, i32) {
+        self.monitors
+            .iter()
+            .fold((i32::MAX, i32::MAX), |origin, monitor| {
+                (
+                    origin.0.min(monitor.bounds.left),
+                    origin.1.min(monitor.bounds.top),
+                )
+            })
+    }
+
     fn monitor_count(&self) -> usize {
         self.monitors.len()
     }

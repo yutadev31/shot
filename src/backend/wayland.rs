@@ -76,6 +76,15 @@ impl Backend for WaylandBackend {
             .ok_or(crate::Error::WaylandScreencopyFailed)
     }
 
+    fn desktop_origin(&self) -> (i32, i32) {
+        self.state
+            .output_layouts
+            .values()
+            .fold((i32::MAX, i32::MAX), |origin, layout| {
+                (origin.0.min(layout.x), origin.1.min(layout.y))
+            })
+    }
+
     fn monitor_count(&self) -> usize {
         self.outputs.len()
     }

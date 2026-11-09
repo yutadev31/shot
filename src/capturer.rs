@@ -227,6 +227,21 @@ fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
 }
 
 impl Capturer {
+    /// Captures a region in desktop coordinates to standard output as PNG.
+    ///
+    /// # Errors
+    /// Returns an error if the region is invalid or capture fails.
+    pub fn capture_desktop_region(region: (i32, i32, u32, u32)) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_all_monitors()?;
+        let (origin_x, origin_y) = session.backend.desktop_origin();
+        let x = u32::try_from(i64::from(region.0) - i64::from(origin_x))
+            .map_err(|_| crate::Error::InvalidRegion)?;
+        let y = u32::try_from(i64::from(region.1) - i64::from(origin_y))
+            .map_err(|_| crate::Error::InvalidRegion)?;
+        session.set_region((x, y, region.2, region.3))?;
+        session.capture_all_outputs()
+    }
+
     /// Captures the zero-based monitor index to standard output as PNG.
     ///
     /// # Errors
@@ -275,5 +290,35 @@ impl Capturer {
     /// Returns an error if backend initialization fails.
     pub fn monitor_names() -> crate::Result<Vec<String>> {
         Ok(CaptureSession::create_backend(BackendTarget::All)?.monitor_names())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Frame, crop_frame};
+
+    #[test]
+    fn crops_pixels_and_rejects_out_of_bounds_regions() {
+        let frame = Frame {
+            data: (0..24).collect(),
+            width: 3,
+            height: 2,
+        };
+        let cropped = crop_frame(&frame, 1, 0, 2, 2).unwrap();
+
+        assert_eq!((cropped.width, cropped.height), (2, 2));
+        assert_eq!(
+            cropped.data,
+            [&frame.data[4..12], &frame.data[16..24]].concat()
+        );
+
+        for region in [
+            (2, 0, 2, 1),
+            (0, 1, 1, 2),
+            (0, 0, 0, 1),
+            (u32::MAX, 0, 1, 1),
+        ] {
+            assert!(crop_frame(&frame, region.0, region.1, region.2, region.3).is_err());
+        }
     }
 }

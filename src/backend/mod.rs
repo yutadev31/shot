@@ -97,6 +97,8 @@ pub trait Backend {
 
     fn capture_all_outputs(&mut self) -> crate::Result<Frame>;
 
+    fn desktop_origin(&self) -> (i32, i32);
+
     fn monitor_count(&self) -> usize;
 
     fn monitor_names(&self) -> Vec<String>;
