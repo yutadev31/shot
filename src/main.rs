@@ -17,7 +17,7 @@ struct Cli {
 /// Reports capture failures and exits with a nonzero status.
 fn main() {
     if let Err(error) = run() {
-        eprintln!("Error: {error}");
+        eprintln!("shot: {error}");
         std::process::exit(1);
     }
 }
