@@ -152,7 +152,23 @@ impl CaptureSession {
     where
         F: FnOnce(&mut dyn Backend) -> crate::Result<Frame>,
     {
-        if io::stdout().is_terminal() {
+        self.capture_to(
+            capture,
+            io::stdout().is_terminal(),
+            &mut io::stdout().lock(),
+        )
+    }
+
+    fn capture_to<F>(
+        &mut self,
+        capture: F,
+        terminal: bool,
+        output: &mut dyn Write,
+    ) -> crate::Result<()>
+    where
+        F: FnOnce(&mut dyn Backend) -> crate::Result<Frame>,
+    {
+        if terminal {
             return Err(crate::Error::StdoutIsTerminal);
         }
 
@@ -164,8 +180,7 @@ impl CaptureSession {
 
         let png = encode_png(&frame)?;
 
-        let mut stdout = io::stdout().lock();
-        stdout.write_all(&png)?;
+        output.write_all(&png)?;
 
         Ok(())
     }
@@ -321,6 +336,136 @@ mod tests {
             (u32::MAX, 0, 1, 1),
         ] {
             assert!(crop_frame(&frame, region.0, region.1, region.2, region.3).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod output_tests {
+    use super::*;
+
+    #[derive(Default)]
+    struct Fake {
+        fail: bool,
+    }
+
+    impl Backend for Fake {
+        fn initialize(_: BackendTarget) -> crate::Result<Self> {
+            Ok(Self::default())
+        }
+        fn capture_output(&mut self) -> crate::Result<Frame> {
+            if self.fail {
+                return Err(crate::Error::NoMonitors);
+            }
+
+            Ok(Frame {
+                data: vec![1, 2, 3, 4, 5, 6, 7, 8],
+                width: 2,
+                height: 1,
+            })
+        }
+        fn capture_all_outputs(&mut self) -> crate::Result<Frame> {
+            self.capture_output()
+        }
+        fn desktop_origin(&self) -> (i32, i32) {
+            (-2, -1)
+        }
+        fn monitor_count(&self) -> usize {
+            1
+        }
+        fn monitor_names(&self) -> Vec<String> {
+            vec!["fake".into()]
+        }
+        fn select_monitor(&mut self, _: usize) -> crate::Result<()> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn png_output_and_errors() {
+        let mut session = CaptureSession {
+            backend: Box::new(Fake::default()),
+            region: Some((1, 0, 1, 1)),
+        };
+        let mut bytes = Vec::new();
+        session
+            .capture_to(|b| b.capture_output(), false, &mut bytes)
+            .unwrap();
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (1, 1));
+        assert_eq!(decoded.as_raw(), &[5, 6, 7, 8]);
+        assert!(matches!(
+            session.capture_to(|_| panic!("must not capture"), true, &mut bytes),
+            Err(crate::Error::StdoutIsTerminal)
+        ));
+        assert!(matches!(
+            session.capture_to(|_| Err(crate::Error::NoMonitors), false, &mut bytes),
+            Err(crate::Error::NoMonitors)
+        ));
+        struct Broken;
+        impl Write for Broken {
+            fn write(&mut self, _: &[u8]) -> io::Result<usize> {
+                Err(io::ErrorKind::BrokenPipe.into())
+            }
+            fn flush(&mut self) -> io::Result<()> {
+                Ok(())
+            }
+        }
+        assert!(
+            matches!(session.capture_to(|b| b.capture_output(), false, &mut Broken), Err(crate::Error::Io(e)) if e.kind() == io::ErrorKind::BrokenPipe)
+        );
+    }
+
+    #[test]
+    fn desktop_and_buffer_boundaries() {
+        let mut backend = Fake::default();
+        assert_eq!(
+            backend.capture_desktop_region((-1, -1, 1, 1)).unwrap().data,
+            [5, 6, 7, 8]
+        );
+        assert_eq!(
+            backend
+                .capture_desktop_region((-2, -1, 2, 1))
+                .unwrap()
+                .width,
+            2
+        );
+        for r in [
+            (-3, -1, 1, 1),
+            (-2, -2, 1, 1),
+            (-1, -1, 2, 1),
+            (-2, -1, 1, 2),
+            (-2, -1, 0, 1),
+        ] {
+            assert!(matches!(
+                backend.capture_desktop_region(r),
+                Err(crate::Error::InvalidRegion)
+            ));
+        }
+        backend.fail = true;
+        assert!(matches!(
+            backend.capture_desktop_region((-2, -1, 1, 1)),
+            Err(crate::Error::NoMonitors)
+        ));
+        backend.fail = false;
+
+        let frame = backend.capture_output().unwrap();
+        for (x, y, w, h) in [(0, 0, 1, 0), (0, u32::MAX, 1, 1)] {
+            assert!(matches!(
+                crop_frame(&frame, x, y, w, h),
+                Err(crate::Error::InvalidRegion)
+            ));
+        }
+        for len in [7, 9] {
+            let frame = Frame {
+                data: vec![0; len],
+                width: 2,
+                height: 1,
+            };
+            assert!(matches!(
+                crop_frame(&frame, 0, 0, 1, 1),
+                Err(crate::Error::InvalidImageBuffer)
+            ));
         }
     }
 }

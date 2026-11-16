@@ -241,3 +241,24 @@ fn channel(pixel: u32, mask: u32) -> u8 {
     let max = mask >> shift;
     u8::try_from((value * 255 + max / 2) / max).expect("normalized channel is at most 255")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::channel;
+
+    #[test]
+    fn normalizes_channels() {
+        for (pixel, mask, expected) in [
+            (123, 0, 0),
+            (0, 0xff0000, 0),
+            (0xff0000, 0xff0000, 255),
+            (0x800000, 0xff0000, 128),
+            (0xf800, 0xf800, 255),
+            (0x8000, 0xf800, 132),
+            (0x400, 0x7e0, 130),
+            (0x1f, 0x1f, 255),
+        ] {
+            assert_eq!(channel(pixel, mask), expected);
+        }
+    }
+}

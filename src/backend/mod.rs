@@ -152,3 +152,44 @@ mod tests {
         assert_eq!(&result.data[12..16], &[5, 6, 7, 8]);
     }
 }
+
+#[cfg(test)]
+mod error_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_invalid_compositions() {
+        assert!(matches!(
+            stitch_positioned(&[]),
+            Err(crate::Error::NoMonitors)
+        ));
+        for len in [3, 5] {
+            let frames = [PositionedFrame {
+                frame: Frame {
+                    data: vec![0; len],
+                    width: 1,
+                    height: 1,
+                },
+                x: 0,
+                y: 0,
+            }];
+            assert!(matches!(
+                stitch_positioned(&frames),
+                Err(crate::Error::InvalidImageBuffer)
+            ));
+        }
+        let frames = [i32::MIN, i32::MAX].map(|x| PositionedFrame {
+            frame: Frame {
+                data: vec![0; 4],
+                width: 1,
+                height: 1,
+            },
+            x,
+            y: 0,
+        });
+        assert!(matches!(
+            stitch_positioned(&frames),
+            Err(crate::Error::InvalidImageBuffer)
+        ));
+    }
+}
