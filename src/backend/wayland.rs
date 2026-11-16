@@ -1240,3 +1240,201 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod conversion_tests {
+    use super::*;
+
+    #[test]
+    fn converts_padded_rows_and_rejects_invalid_input() {
+        let bytes = [1, 2, 3, 4, 99, 99, 99, 99, 5, 6, 7, 8];
+        assert_eq!(
+            convert_to_rgba(&bytes, 1, 2, 8, wl_shm::Format::Argb8888).unwrap(),
+            [3, 2, 1, 4, 7, 6, 5, 8]
+        );
+        assert_eq!(
+            convert_to_rgba(&bytes, 1, 2, 8, wl_shm::Format::Xrgb8888).unwrap(),
+            [3, 2, 1, 255, 7, 6, 5, 255]
+        );
+        assert!(matches!(
+            convert_to_rgba(&bytes[..11], 1, 2, 8, wl_shm::Format::Argb8888),
+            Err(crate::Error::InvalidImageBuffer)
+        ));
+        assert!(matches!(
+            convert_to_rgba(&bytes, 1, 1, 4, wl_shm::Format::Rgb565),
+            Err(crate::Error::UnsupportedWaylandPixelFormat(_))
+        ));
+    }
+
+    #[test]
+    fn fractional_crop_preserves_selected_pixels() {
+        let frame = Frame {
+            data: (0..36).flat_map(|v| [v, 0, 0, 255]).collect(),
+            width: 6,
+            height: 6,
+        };
+        let layout = OutputLayout {
+            x: -1,
+            y: -1,
+            width: 4,
+            height: 4,
+        };
+        let result = compose_logical_region(&[(frame, layout)], Some((0, 0, 2, 2))).unwrap();
+        assert_eq!((result.width, result.height), (3, 3));
+        // Source rectangle is [1,5) on both axes, including fractional boundary pixels.
+        let source = image::RgbaImage::from_fn(4, 4, |x, y| {
+            image::Rgba([((y + 1) * 6 + x + 1) as u8, 0, 0, 255])
+        });
+        let expected =
+            image::imageops::resize(&source, 3, 3, image::imageops::FilterType::Triangle);
+        assert_eq!(result.data, expected.into_raw());
+    }
+}
+
+#[cfg(test)]
+mod event_error_tests {
+    use super::*;
+    use wayland_client::Proxy;
+
+    #[test]
+    fn validates_session_constraints_and_failures() {
+        let (socket, _server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let queue = connection.new_event_queue::<State>();
+        let qh = queue.handle();
+        let proxy = ext_image_copy_capture_session_v1::ExtImageCopyCaptureSessionV1::inert(
+            connection.backend().downgrade(),
+        );
+        use ext_image_copy_capture_session_v1::Event;
+        for (size, format) in [
+            (None, None),
+            (Some((1, 1)), None),
+            (None, Some(wl_shm::Format::Argb8888)),
+            (Some((0, 1)), Some(wl_shm::Format::Argb8888)),
+            (Some((u32::MAX, 1)), Some(wl_shm::Format::Argb8888)),
+        ] {
+            let mut state = State::default();
+            state.captures.insert(
+                CaptureId(0),
+                CaptureState {
+                    ext_size: size,
+                    ext_format: format,
+                    ..Default::default()
+                },
+            );
+            <State as Dispatch<_, CaptureId>>::event(
+                &mut state,
+                &proxy,
+                Event::Done,
+                &CaptureId(0),
+                &connection,
+                &qh,
+            );
+            assert!(matches!(
+                state.captures[&CaptureId(0)].check_error(),
+                Err(crate::Error::WaylandScreencopyFailed)
+            ));
+        }
+        for reverse in [false, true] {
+            let mut state = State::default();
+            state.captures.insert(
+                CaptureId(0),
+                CaptureState {
+                    ext_size: Some((1, 1)),
+                    ..Default::default()
+                },
+            );
+            let mut formats = [wl_shm::Format::Rgb565, wl_shm::Format::Argb8888];
+            if reverse {
+                formats.reverse();
+            }
+            for format in formats {
+                <State as Dispatch<_, CaptureId>>::event(
+                    &mut state,
+                    &proxy,
+                    Event::ShmFormat {
+                        format: WEnum::Value(format),
+                    },
+                    &CaptureId(0),
+                    &connection,
+                    &qh,
+                );
+            }
+            <State as Dispatch<_, CaptureId>>::event(
+                &mut state,
+                &proxy,
+                Event::Done,
+                &CaptureId(0),
+                &connection,
+                &qh,
+            );
+            assert!(state.captures[&CaptureId(0)].check_error().is_ok());
+            <State as Dispatch<_, CaptureId>>::event(
+                &mut state,
+                &proxy,
+                Event::Stopped,
+                &CaptureId(0),
+                &connection,
+                &qh,
+            );
+            assert!(matches!(
+                state.captures[&CaptureId(0)].check_error(),
+                Err(crate::Error::WaylandScreencopyFailed)
+            ));
+        }
+        let proxy = ext_image_copy_capture_frame_v1::ExtImageCopyCaptureFrameV1::inert(
+            connection.backend().downgrade(),
+        );
+        let mut state = State::default();
+        state.captures.insert(CaptureId(0), CaptureState::default());
+        <State as Dispatch<_, CaptureId>>::event(
+            &mut state,
+            &proxy,
+            ext_image_copy_capture_frame_v1::Event::Transform {
+                transform: WEnum::Unknown(u32::MAX),
+            },
+            &CaptureId(0),
+            &connection,
+            &qh,
+        );
+        assert!(matches!(
+            state.captures[&CaptureId(0)].check_error(),
+            Err(crate::Error::WaylandScreencopyFailed)
+        ));
+    }
+}
+
+#[cfg(test)]
+mod unknown_format_tests {
+    use super::*;
+    use wayland_client::Proxy;
+
+    #[test]
+    fn rejects_unknown_wlr_format() {
+        let (socket, _server) = std::os::unix::net::UnixStream::pair().unwrap();
+        let connection = Connection::from_socket(socket).unwrap();
+        let queue = connection.new_event_queue::<State>();
+        let proxy = zwlr_screencopy_frame_v1::ZwlrScreencopyFrameV1::inert(
+            connection.backend().downgrade(),
+        );
+        let mut state = State::default();
+        state.captures.insert(CaptureId(0), CaptureState::default());
+        <State as Dispatch<_, CaptureId>>::event(
+            &mut state,
+            &proxy,
+            zwlr_screencopy_frame_v1::Event::Buffer {
+                format: WEnum::Unknown(u32::MAX),
+                width: 1,
+                height: 1,
+                stride: 4,
+            },
+            &CaptureId(0),
+            &connection,
+            &queue.handle(),
+        );
+        assert!(matches!(
+            state.captures[&CaptureId(0)].check_error(),
+            Err(crate::Error::WaylandScreencopyFailed)
+        ));
+    }
+}
