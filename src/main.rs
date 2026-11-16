@@ -1,9 +1,13 @@
 use clap::Parser;
-use shot::capturer::Capturer;
+use shot::capturer::{Capturer, OutputFormat};
 
 #[derive(Parser)]
 #[command(name = "shot", version, about = "Capture a screenshot from a monitor")]
 struct Cli {
+    /// Output image format
+    #[arg(long, value_enum, default_value = "png")]
+    format: OutputFormat,
+
     /// Monitor ID to capture (for example HDMI-A-1); choose interactively when omitted
     #[arg(short = 'm', long, value_name = "ID")]
     monitor: Option<String>,
@@ -27,15 +31,15 @@ fn run() -> Result<(), Box<dyn std::error::Error>> {
     let cli = Cli::parse();
 
     if let Some(region) = &cli.region {
-        Capturer::capture_desktop_region(parse_region(&region.join(" "))?)?;
+        Capturer::capture_desktop_region_with_format(parse_region(&region.join(" "))?, cli.format)?;
     } else if let Some(monitor) = &cli.monitor {
         if let Ok(index) = monitor.parse::<usize>() {
-            Capturer::capture_output(index)?;
+            Capturer::capture_output_with_format(index, cli.format)?;
         } else {
-            Capturer::capture_output_by_name(monitor)?;
+            Capturer::capture_output_by_name_with_format(monitor, cli.format)?;
         }
     } else {
-        Capturer::capture_all_outputs()?;
+        Capturer::capture_all_outputs_with_format(cli.format)?;
     }
 
     Ok(())
@@ -76,6 +80,21 @@ fn parse_region(value: &str) -> Result<(i32, i32, u32, u32), &'static str> {
 mod tests {
     use super::{Cli, parse_region};
     use clap::Parser;
+
+    #[test]
+    fn parses_output_format() {
+        use shot::capturer::OutputFormat;
+
+        assert_eq!(
+            Cli::try_parse_from(["shot"]).unwrap().format,
+            OutputFormat::Png
+        );
+        for (value, expected) in [("png", OutputFormat::Png), ("jpeg", OutputFormat::Jpeg)] {
+            let cli = Cli::try_parse_from(["shot", "--format", value]).unwrap();
+            assert_eq!(cli.format, expected);
+        }
+        assert!(Cli::try_parse_from(["shot", "--format", "gif"]).is_err());
+    }
 
     #[test]
     /// Checks both shell argument forms of a slurp selection.

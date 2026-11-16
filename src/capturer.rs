@@ -6,6 +6,7 @@ use std::env;
 
 use image::{
     ExtendedColorType, ImageEncoder,
+    codecs::jpeg::JpegEncoder,
     codecs::png::{CompressionType, FilterType, PngEncoder},
 };
 
@@ -27,8 +28,17 @@ use crate::backend::{Backend, BackendTarget, Frame};
 /// ```
 pub struct Capturer;
 
+/// Image format written to standard output.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, clap::ValueEnum)]
+pub enum OutputFormat {
+    #[default]
+    Png,
+    Jpeg,
+}
+
 struct CaptureSession {
     backend: Box<dyn Backend>,
+    format: OutputFormat,
     region: Option<(u32, u32, u32, u32)>,
 }
 
@@ -102,6 +112,7 @@ impl CaptureSession {
     fn with_backend(target: BackendTarget) -> crate::Result<Self> {
         Ok(Self {
             backend: Self::create_backend(target)?,
+            format: OutputFormat::Png,
             region: None,
         })
     }
@@ -178,9 +189,12 @@ impl CaptureSession {
             frame = crop_frame(&frame, x, y, width, height)?;
         }
 
-        let png = encode_png(&frame)?;
+        let bytes = match self.format {
+            OutputFormat::Png => encode_png(&frame)?,
+            OutputFormat::Jpeg => encode_jpeg(&frame)?,
+        };
 
-        output.write_all(&png)?;
+        output.write_all(&bytes)?;
 
         Ok(())
     }
@@ -235,6 +249,33 @@ pub(crate) fn crop_frame(
     })
 }
 
+fn encode_jpeg(frame: &Frame) -> crate::Result<Vec<u8>> {
+    let expected = (frame.width as usize)
+        .checked_mul(frame.height as usize)
+        .and_then(|pixels| pixels.checked_mul(4))
+        .ok_or(crate::Error::InvalidImageBuffer)?;
+
+    if frame.data.len() != expected {
+        return Err(crate::Error::InvalidImageBuffer);
+    }
+
+    let mut rgb = Vec::with_capacity(frame.data.len() / 4 * 3);
+
+    for pixel in frame.data.as_chunks::<4>().0 {
+        rgb.extend_from_slice(&pixel[..3]);
+    }
+
+    let mut bytes = Vec::new();
+    JpegEncoder::new(&mut bytes).write_image(
+        &rgb,
+        frame.width,
+        frame.height,
+        ExtendedColorType::Rgb8,
+    )?;
+
+    Ok(bytes)
+}
+
 fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
     let mut png = Cursor::new(Vec::new());
 
@@ -254,7 +295,19 @@ impl Capturer {
     /// # Errors
     /// Returns an error if the region is invalid or capture fails.
     pub fn capture_desktop_region(region: (i32, i32, u32, u32)) -> crate::Result<()> {
+        Self::capture_desktop_region_with_format(region, OutputFormat::Png)
+    }
+
+    /// Captures a desktop region using the selected format.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, encoding, or writing fails.
+    pub fn capture_desktop_region_with_format(
+        region: (i32, i32, u32, u32),
+        format: OutputFormat,
+    ) -> crate::Result<()> {
         let mut session = CaptureSession::new_for_all_monitors()?;
+        session.format = format;
         session.capture(|backend| backend.capture_desktop_region(region))
     }
 
@@ -263,7 +316,20 @@ impl Capturer {
     /// # Errors
     /// Returns an error if initialization, capture, encoding, or writing fails.
     pub fn capture_output(monitor_index: usize) -> crate::Result<()> {
-        CaptureSession::new_for_monitor(monitor_index)?.capture_output()
+        Self::capture_output_with_format(monitor_index, OutputFormat::Png)
+    }
+
+    /// Captures a monitor index using the selected format.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, encoding, or writing fails.
+    pub fn capture_output_with_format(
+        monitor_index: usize,
+        format: OutputFormat,
+    ) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_monitor(monitor_index)?;
+        session.format = format;
+        session.capture_output()
     }
 
     /// Captures an exact monitor name to standard output as PNG.
@@ -271,7 +337,20 @@ impl Capturer {
     /// # Errors
     /// Returns an error if the monitor is absent or capture fails.
     pub fn capture_output_by_name(name: &str) -> crate::Result<()> {
-        CaptureSession::new_for_monitor_name(name)?.capture_output()
+        Self::capture_output_by_name_with_format(name, OutputFormat::Png)
+    }
+
+    /// Captures a named monitor using the selected format.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, encoding, or writing fails.
+    pub fn capture_output_by_name_with_format(
+        name: &str,
+        format: OutputFormat,
+    ) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_monitor_name(name)?;
+        session.format = format;
+        session.capture_output()
     }
 
     /// Captures all outputs as one PNG image to standard output.
@@ -279,7 +358,17 @@ impl Capturer {
     /// # Errors
     /// Returns an error if initialization, capture, stitching, encoding, or writing fails.
     pub fn capture_all_outputs() -> crate::Result<()> {
-        CaptureSession::new_for_all_monitors()?.capture_all_outputs()
+        Self::capture_all_outputs_with_format(OutputFormat::Png)
+    }
+
+    /// Captures all monitors using the selected format.
+    ///
+    /// # Errors
+    /// Returns an error if initialization, capture, encoding, or writing fails.
+    pub fn capture_all_outputs_with_format(format: OutputFormat) -> crate::Result<()> {
+        let mut session = CaptureSession::new_for_all_monitors()?;
+        session.format = format;
+        session.capture_all_outputs()
     }
 
     /// Captures a region `(x, y, width, height)` within the selected monitor.
@@ -344,6 +433,36 @@ mod tests {
 mod output_tests {
     use super::*;
 
+    #[test]
+    fn jpeg_output_preserves_dimensions_and_rgb() {
+        let mut session = CaptureSession {
+            backend: Box::new(Fake::default()),
+            format: OutputFormat::Jpeg,
+            region: Some((1, 0, 1, 1)),
+        };
+        let mut bytes = Vec::new();
+        session
+            .capture_to(|b| b.capture_output(), false, &mut bytes)
+            .unwrap();
+        assert_eq!(
+            image::guess_format(&bytes).unwrap(),
+            image::ImageFormat::Jpeg
+        );
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgb8();
+        assert_eq!(decoded.dimensions(), (1, 1));
+        for (actual, expected) in decoded.as_raw().iter().zip([5u8, 6, 7]) {
+            assert!(actual.abs_diff(expected) <= 3);
+        }
+        assert!(matches!(
+            encode_jpeg(&Frame {
+                data: vec![0; 3],
+                width: 1,
+                height: 1
+            }),
+            Err(crate::Error::InvalidImageBuffer)
+        ));
+    }
+
     #[derive(Default)]
     struct Fake {
         fail: bool,
@@ -385,6 +504,7 @@ mod output_tests {
     fn png_output_and_errors() {
         let mut session = CaptureSession {
             backend: Box::new(Fake::default()),
+            format: OutputFormat::Png,
             region: Some((1, 0, 1, 1)),
         };
         let mut bytes = Vec::new();
