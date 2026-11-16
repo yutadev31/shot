@@ -77,7 +77,7 @@ pub enum Error {
     #[error("X11 image operation failed: {0}")]
     X11Image(#[source] Box<dyn std::error::Error + Send + Sync>),
 
-    #[error("refusing to write PNG data to a terminal; redirect stdout to a file or pipe")]
+    #[error("refusing to write image data to a terminal; redirect stdout to a file or pipe")]
     StdoutIsTerminal,
 }
 
