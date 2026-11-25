@@ -35,6 +35,13 @@ pub enum Error {
         source: std::io::Error,
     },
 
+    #[cfg(target_os = "macos")]
+    #[error("macOS {operation} failed: {message}")]
+    Macos {
+        operation: &'static str,
+        message: String,
+    },
+
     #[error("monitor index {index} is out of range (found {count} monitor(s))")]
     MonitorOutOfRange { index: usize, count: usize },
 

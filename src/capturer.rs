@@ -152,7 +152,14 @@ impl CaptureSession {
         ))
     }
 
-    #[cfg(not(any(target_os = "linux", windows)))]
+    #[cfg(target_os = "macos")]
+    fn create_backend(target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
+        Ok(Box::new(crate::backend::macos::MacosBackend::initialize(
+            target,
+        )?))
+    }
+
+    #[cfg(not(any(target_os = "linux", target_os = "macos", windows)))]
     fn create_backend(_target: BackendTarget) -> crate::Result<Box<dyn Backend>> {
         Err(crate::Error::DisplayUnavailable(
             "unsupported operating system".to_string(),

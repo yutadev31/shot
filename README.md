@@ -10,7 +10,7 @@ A lightweight, cross-platform screenshot utility written in Rust.
 - Select a monitor by index or name.
 - Combine multiple monitors into one image while preserving their desktop positions.
 - Output PNG or JPEG images directly to standard output.
-- Support X11, Wayland, and Windows.
+- Support X11, Wayland, Windows, and macOS.
 
 ## Installation
 
@@ -101,7 +101,7 @@ shot | tee screenshot.png | cpy
 | Linux | Wayland | Supported |
 | Linux | X11 | Supported |
 | Windows | Win32 | Supported |
-| macOS | — | Not supported |
+| macOS | ScreenCaptureKit | Supported |
 
 On Wayland, the compositor must support at least one of the following screenshot protocols:
 
@@ -110,7 +110,15 @@ On Wayland, the compositor must support at least one of the following screenshot
 
 On Windows, version 1703 or later of Windows 10 is required. Use Command Prompt or PowerShell 7.4 or later when redirecting PNG output.
 
+On macOS, capture requires macOS 14 or later and screen recording permission
+in System Settings under Privacy & Security. Monitor names use the form
+`Display-<id>`, with the primary display at index 0. Single-monitor captures
+use the display's backing resolution. Combined screenshots and desktop regions
+use logical desktop coordinates and one output pixel per point.
+
 Screenshot capture requires an active graphical desktop session.
+
+**Note**: macOS support is currently untested due to a lack of access to macOS hardware.
 
 ## Development
 
