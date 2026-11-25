@@ -8,6 +8,7 @@ use image::{
     ExtendedColorType, ImageEncoder,
     codecs::jpeg::JpegEncoder,
     codecs::png::{CompressionType, FilterType, PngEncoder},
+    codecs::webp::WebPEncoder,
 };
 
 #[cfg(target_os = "linux")]
@@ -34,6 +35,7 @@ pub enum OutputFormat {
     #[default]
     Png,
     Jpeg,
+    Webp,
 }
 
 struct CaptureSession {
@@ -199,6 +201,7 @@ impl CaptureSession {
         let bytes = match self.format {
             OutputFormat::Png => encode_png(&frame)?,
             OutputFormat::Jpeg => encode_jpeg(&frame)?,
+            OutputFormat::Webp => encode_webp(&frame)?,
         };
 
         output.write_all(&bytes)?;
@@ -294,6 +297,19 @@ fn encode_png(frame: &Frame) -> crate::Result<Vec<u8>> {
     )?;
 
     Ok(png.into_inner())
+}
+
+fn encode_webp(frame: &Frame) -> crate::Result<Vec<u8>> {
+    let mut bytes = Vec::new();
+
+    WebPEncoder::new_lossless(&mut bytes).write_image(
+        &frame.data,
+        frame.width,
+        frame.height,
+        ExtendedColorType::Rgba8,
+    )?;
+
+    Ok(bytes)
 }
 
 impl Capturer {
@@ -439,6 +455,27 @@ mod tests {
 #[cfg(test)]
 mod output_tests {
     use super::*;
+
+    #[test]
+    fn webp_output_preserves_dimensions_and_rgba() {
+        let mut session = CaptureSession {
+            backend: Box::new(Fake::default()),
+            format: OutputFormat::Webp,
+            region: Some((1, 0, 1, 1)),
+        };
+        let mut bytes = Vec::new();
+        session
+            .capture_to(|b| b.capture_output(), false, &mut bytes)
+            .unwrap();
+
+        assert_eq!(
+            image::guess_format(&bytes).unwrap(),
+            image::ImageFormat::WebP
+        );
+        let decoded = image::load_from_memory(&bytes).unwrap().to_rgba8();
+        assert_eq!(decoded.dimensions(), (1, 1));
+        assert_eq!(decoded.as_raw(), &[5, 6, 7, 8]);
+    }
 
     #[test]
     fn jpeg_output_preserves_dimensions_and_rgb() {

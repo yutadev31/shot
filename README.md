@@ -2,14 +2,14 @@
 
 A lightweight, cross-platform screenshot utility written in Rust.
 
-`shot` captures screenshots and writes PNG or JPEG images to standard output, making it easy to save screenshots to files or pipe them into other commands.
+`shot` captures screenshots and writes PNG, JPEG, or WebP images to standard output, making it easy to save screenshots to files or pipe them into other commands.
 
 ## Features
 
 - Capture a single monitor or all monitors.
 - Select a monitor by index or name.
 - Combine multiple monitors into one image while preserving their desktop positions.
-- Output PNG or JPEG images directly to standard output.
+- Output PNG, JPEG, or lossless WebP images directly to standard output.
 - Support X11, Wayland, Windows, and macOS.
 
 ## Installation
@@ -38,13 +38,14 @@ When multiple monitors are connected, their screenshots are combined into a sing
 
 ### Select the output format
 
-PNG is the default. Select JPEG with `--format jpeg`:
+PNG is the default. Use `--format` to select JPEG or lossless WebP.
 
 ```sh
 shot --format jpeg > screenshot.jpg
+shot --format webp > screenshot.webp
 ```
 
-`--format png` explicitly selects PNG. Both formats support monitor and region captures.
+`--format png` explicitly selects PNG. All formats support monitor and region captures.
 
 ### Capture a specific monitor
 

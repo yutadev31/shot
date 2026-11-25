@@ -89,7 +89,11 @@ mod tests {
             Cli::try_parse_from(["shot"]).unwrap().format,
             OutputFormat::Png
         );
-        for (value, expected) in [("png", OutputFormat::Png), ("jpeg", OutputFormat::Jpeg)] {
+        for (value, expected) in [
+            ("png", OutputFormat::Png),
+            ("jpeg", OutputFormat::Jpeg),
+            ("webp", OutputFormat::Webp),
+        ] {
             let cli = Cli::try_parse_from(["shot", "--format", value]).unwrap();
             assert_eq!(cli.format, expected);
         }
